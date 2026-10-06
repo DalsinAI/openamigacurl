@@ -57,6 +57,9 @@ archive() {
 
 TOOLCHAIN=${TOOLCHAIN_FILE:?set TOOLCHAIN_FILE to openamigabrowser/toolchain/amigaos3-gcc16.cmake}
 AMISSL=${AMISSL_SDK:?set AMISSL_SDK to the Developer folder of the AmiSSL 5 SDK}
+# zlib (gzip and deflate answers): openamigaimage's, in DEPS_PREFIX (default PREFIX).
+DEPS=${DEPS_PREFIX:-$OUT}
+[ -f "$DEPS/lib/libz.a" ] || { echo "missing $DEPS/lib/libz.a (zlib, from openamigaimage)"; exit 2; }
 unpack curl curl-8.22.0.tar.xz f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 # curl's configure checks link programs, and asks for libnet: an empty one will do.
 mkdir -p "$WORK/stublibs" && "$AR" rcs "$WORK/stublibs/libnet.a"
@@ -70,7 +73,8 @@ cmake ../curl-8.22.0 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Rele
     -DCURL_DISABLE_ALTSVC=ON -DHAVE_PIPE=OFF -DUSE_SSLS_EXPORT=ON \
     -DHAVE_FCNTL_O_NONBLOCK=OFF -DHAVE_IOCTL_FIONBIO=OFF -DHAVE_IOCTLSOCKET_CAMEL=ON -DHAVE_IOCTLSOCKET_CAMEL_FIONBIO=ON \
     -DAMISSL_INCLUDE_DIR="$AMISSL/include" -DAMISSL_STUBS_LIBRARY="$AMISSL/lib/AmigaOS3/libamisslstubs.a" \
-    -DAMISSL_AUTO_LIBRARY="$AMISSL/lib/AmigaOS3/libamisslauto.a"
+    -DAMISSL_AUTO_LIBRARY="$AMISSL/lib/AmigaOS3/libamisslauto.a" \
+    -DCURL_ZLIB=ON -DZLIB_INCLUDE_DIR="$DEPS/include" -DZLIB_LIBRARY="$DEPS/lib/libz.a"
 make -j"$JOBS" libcurl_static
 cp lib/libcurl.a "$OUT/lib/"
 mkdir -p "$OUT/include/curl" && cp ../curl-8.22.0/include/curl/*.h "$OUT/include/curl/"
