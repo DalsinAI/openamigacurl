@@ -23,7 +23,7 @@ CC="$P/bin/m68k-amigaos-gcc"
 CXX="$P/bin/m68k-amigaos-g++"
 AR="$P/bin/m68k-amigaos-ar"
 CPU=${OS32_CPU_FLAGS:-"-m68020 -m68881 -mcrt=nix20"}
-CFLAGS="-O2 $CPU -D_DEFAULT_SOURCE=1 -D_POSIX_TIMERS=1 -D_POSIX_REALTIME_SIGNALS=1 -fno-common"
+CFLAGS="-O2 $CPU -fno-delete-null-pointer-checks -D_DEFAULT_SOURCE=1 -D_POSIX_TIMERS=1 -D_POSIX_REALTIME_SIGNALS=1 -fno-common"
 mkdir -p "$OUT/include" "$OUT/lib" "$WORK"
 
 # unpack NAME TARBALL SHA256: check the tarball and unpack it into $WORK
@@ -64,7 +64,7 @@ unpack curl curl-8.22.0.tar.xz f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e22
 # curl's configure checks link programs, and asks for libnet: an empty one will do.
 mkdir -p "$WORK/stublibs" && "$AR" rcs "$WORK/stublibs/libnet.a"
 mkdir -p "$WORK/curl/build" && cd "$WORK/curl/build"
-cmake ../curl-8.22.0 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O2 \
+cmake ../curl-8.22.0 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE="-O2 -fno-delete-null-pointer-checks" \
     -DCMAKE_EXE_LINKER_FLAGS="$CPU -L$WORK/stublibs" -DCMAKE_INSTALL_PREFIX="$OUT" -DAMIGA=ON \
     -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF \
     -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF -DHTTP_ONLY=ON \
