@@ -36,8 +36,8 @@ tarballs from [SOURCES](SOURCES) in `tarballs/`. Then:
 ```
 
 The libraries and headers land in `out/` (set `PREFIX` to change that). The
-script prints which other settings it needs, if any. Target: the 68040
-with its FPU (`-m68040 -m68881`), libnix (`-mcrt=nix20`).
+script prints which other settings it needs, if any. Needs a 68040
+with FPU (hard float, `-m68040 -m68881`), libnix (`-mcrt=nix20`).
 
 Link with: `-lcurl -lz libamisslstubs.a -lpthread -latomic -lm`
 
