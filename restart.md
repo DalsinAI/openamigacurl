@@ -2,6 +2,10 @@
 
 _Written 6 October 2026 at about 23:55 UTC, while all work is paused on @SacredTrees's word (23:28 UTC). Read this first when work resumes; the newest capsule and the live PR list win if they disagree._
 
+## 19 October 2026: AmiSSL out, OpenTLS in
+
+On @SacredTrees's decision of 19 October (OpenTLS everywhere), curl's HTTPS now goes through opentls.library: `patches/0001-vtls-opentls-backend.patch` adds `lib/vtls/opentls.c` and `CURL_USE_OPENTLS`, and build.sh uses it. `tests/host/host-test.sh` (CI) passes on Linux, plain and under ASan/UBSan. Next: the Amiga build on the build PC, `curltest` on an instance, then OpenBrowser's `scripts/build-webcore.sh` off AmiSSL. Team 2 owns this repo's TLS work.
+
 ## What this repo is
 
 curl and libcurl built for AmigaOS 3.x (m68k) as static link libraries. Part of the Open family and an OpenBrowser dependency. Upstream source is fetched and pinned at build time, never committed.
