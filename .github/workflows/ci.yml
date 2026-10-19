@@ -1,0 +1,26 @@
+name: openamigacurl CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    # curl with patches/ and OpenTLS's host build, against a local HTTPS
+    # server (tests/host/host-test.sh). The Amiga build is build.sh's.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: DalsinAI/openamigatls
+          ref: e7c0e2d546f33c655c1e4512b4669428daf8a56f
+          path: openamigatls
+      - name: Fetch curl (SOURCES)
+        run: |
+          mkdir -p tarballs
+          curl -fsSL -o tarballs/curl-8.22.0.tar.xz https://curl.se/download/curl-8.22.0.tar.xz
+      - name: Host test
+        run: OPENTLS_SRC=openamigatls JOBS=4 tests/host/host-test.sh
+      - name: Host test with AddressSanitizer and UBSan
+        run: OPENTLS_SRC=openamigatls JOBS=4 SANITIZE=1 tests/host/host-test.sh

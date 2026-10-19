@@ -1,0 +1,956 @@
+diff -ruN a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -744,13 +744,15 @@
+ cmake_dependent_option(CURL_USE_WOLFSSL "Enable wolfSSL for SSL/TLS" OFF CURL_ENABLE_SSL OFF)
+ cmake_dependent_option(CURL_USE_GNUTLS "Enable GnuTLS for SSL/TLS" OFF CURL_ENABLE_SSL OFF)
+ cmake_dependent_option(CURL_USE_RUSTLS "Enable Rustls for SSL/TLS (experimental)" OFF CURL_ENABLE_SSL OFF)
++cmake_dependent_option(CURL_USE_OPENTLS "Enable OpenTLS (opentls.library) for SSL/TLS" OFF CURL_ENABLE_SSL OFF)
+ 
+ if(WIN32 OR
+    CURL_USE_SCHANNEL OR
+    CURL_USE_MBEDTLS OR
+    CURL_USE_WOLFSSL OR
+    CURL_USE_GNUTLS OR
+-   CURL_USE_RUSTLS)
++   CURL_USE_RUSTLS OR
++   CURL_USE_OPENTLS)
+   set(_openssl_default OFF)
+ else()
+   set(_openssl_default ON)
+@@ -765,6 +767,7 @@
+   CURL_USE_WOLFSSL
+   CURL_USE_GNUTLS
+   CURL_USE_RUSTLS
++  CURL_USE_OPENTLS
+ )
+ if(_enabled_ssl_options_count GREATER 1)
+   set(CURL_WITH_MULTI_SSL ON)
+@@ -949,6 +952,25 @@
+   set(_curl_ca_bundle_supported TRUE)
+ endif()
+ 
++if(CURL_USE_OPENTLS)
++  # opentls.library's headers (openamigatls include/); on hosts other than
++  # AmigaOS, OPENTLS_LIBRARY names its host build (libopentls.a).
++  set(OPENTLS_INCLUDE_DIR "" CACHE PATH "OpenTLS include directory")
++  set(OPENTLS_LIBRARY "" CACHE STRING "OpenTLS host libraries")
++  if(OPENTLS_INCLUDE_DIR)
++    include_directories(SYSTEM ${OPENTLS_INCLUDE_DIR})
++  endif()
++  if(OPENTLS_LIBRARY)
++    list(APPEND CURL_LIBS ${OPENTLS_LIBRARY})
++  endif()
++  set(_ssl_enabled ON)
++  set(USE_OPENTLS ON)
++  if(CURL_DEFAULT_SSL_BACKEND AND CURL_DEFAULT_SSL_BACKEND STREQUAL "opentls")
++    set(_valid_default_ssl_backend TRUE)
++  endif()
++  set(_curl_ca_bundle_supported TRUE)
++endif()
++
+ if(CURL_USE_RUSTLS)
+   find_package(Rustls MODULE REQUIRED)
+   set(_ssl_enabled ON)
+@@ -2103,6 +2125,7 @@
+ curl_add_if("wolfSSL"       _ssl_enabled AND USE_WOLFSSL)
+ curl_add_if("GnuTLS"        _ssl_enabled AND USE_GNUTLS)
+ curl_add_if("Rustls"        _ssl_enabled AND USE_RUSTLS)
++curl_add_if("OpenTLS"       _ssl_enabled AND USE_OPENTLS)
+ 
+ if(_items)
+   list(SORT _items CASE INSENSITIVE)
+diff -ruN a/lib/Makefile.inc b/lib/Makefile.inc
+--- a/lib/Makefile.inc
++++ b/lib/Makefile.inc
+@@ -112,6 +112,7 @@
+   vtls/keylog.c             \
+   vtls/mbedtls.c            \
+   vtls/openssl.c            \
++  vtls/opentls.c            \
+   vtls/rustls.c             \
+   vtls/schannel.c           \
+   vtls/schannel_verify.c    \
+@@ -130,6 +131,7 @@
+   vtls/keylog.h             \
+   vtls/mbedtls.h            \
+   vtls/openssl.h            \
++  vtls/opentls.h            \
+   vtls/rustls.h             \
+   vtls/schannel.h           \
+   vtls/schannel_int.h       \
+diff -ruN a/lib/amigaos.c b/lib/amigaos.c
+--- a/lib/amigaos.c
++++ b/lib/amigaos.c
+@@ -32,7 +32,7 @@
+ #ifdef HAVE_PROTO_BSDSOCKET_H
+ #  ifdef __amigaos4__
+ #    include <bsdsocket/socketbasetags.h>
+-#  elif !defined(USE_AMISSL)
++#  elif !defined(USE_AMISSL) && !defined(USE_OPENTLS)
+ #    include <amitcp/socketbasetags.h>
+ #  endif
+ #  ifdef __libnix__
+@@ -183,7 +183,7 @@
+ }
+ #endif /* USE_AMISSL */
+ 
+-#elif !defined(USE_AMISSL) /* __amigaos4__ */
++#elif !defined(USE_AMISSL) && !defined(USE_OPENTLS) /* __amigaos4__ */
+ /*
+  * Amiga OS3 specific code
+  */
+@@ -232,7 +232,7 @@
+ ADD2EXIT(Curl_amiga_cleanup, -50);
+ #endif
+ 
+-#endif /* !USE_AMISSL */
++#endif /* !USE_AMISSL && !USE_OPENTLS */
+ 
+ #endif /* HAVE_PROTO_BSDSOCKET_H */
+ 
+diff -ruN a/lib/amigaos.h b/lib/amigaos.h
+--- a/lib/amigaos.h
++++ b/lib/amigaos.h
+@@ -25,8 +25,10 @@
+  ***************************************************************************/
+ #include "curl_setup.h"
+ 
++/* With AmiSSL or OpenTLS on OS3, the program opens bsdsocket.library and
++   sets SocketBase itself, in each task that calls curl. */
+ #if defined(__AMIGA__) && defined(HAVE_PROTO_BSDSOCKET_H) && \
+-  (!defined(USE_AMISSL) || defined(__amigaos4__))
++  ((!defined(USE_AMISSL) && !defined(USE_OPENTLS)) || defined(__amigaos4__))
+ 
+ CURLcode Curl_amiga_init(void);
+ void Curl_amiga_cleanup(void);
+diff -ruN a/lib/curl_config-cmake.h.in b/lib/curl_config-cmake.h.in
+--- a/lib/curl_config-cmake.h.in
++++ b/lib/curl_config-cmake.h.in
+@@ -668,6 +668,9 @@
+ /* if Rustls is enabled */
+ #cmakedefine USE_RUSTLS 1
+ 
++/* if OpenTLS (opentls.library) is enabled */
++#cmakedefine USE_OPENTLS 1
++
+ /* if wolfSSL is enabled */
+ #cmakedefine USE_WOLFSSL 1
+ 
+diff -ruN a/lib/curl_setup.h b/lib/curl_setup.h
+--- a/lib/curl_setup.h
++++ b/lib/curl_setup.h
+@@ -725,7 +725,8 @@
+ #endif
+ 
+ #if defined(USE_GNUTLS) || defined(USE_OPENSSL) || defined(USE_MBEDTLS) || \
+-  defined(USE_WOLFSSL) || defined(USE_SCHANNEL) || defined(USE_RUSTLS)
++  defined(USE_WOLFSSL) || defined(USE_SCHANNEL) || defined(USE_RUSTLS) || \
++  defined(USE_OPENTLS)
+ #define USE_SSL    /* SSL support has been enabled */
+ #endif
+ 
+diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
+--- a/lib/vtls/opentls.c
++++ b/lib/vtls/opentls.c
+@@ -0,0 +1,733 @@
++/***************************************************************************
++ *                                  _   _ ____  _
++ *  Project                     ___| | | |  _ \| |
++ *                             / __| | | | |_) | |
++ *                            | (__| |_| |  _ <| |___
++ *                             \___|\___/|_| \_\_____|
++ *
++ * Copyright (C) AmigaChrome Team
++ *
++ * This software is licensed as described in the file COPYING, which
++ * you should have received as part of this distribution. The terms
++ * are also available at https://curl.se/docs/copyright.html.
++ *
++ * You may opt to use, copy, modify, merge, publish, distribute and/or sell
++ * copies of the Software, and permit persons to whom the Software is
++ * furnished to do so, under the terms of the COPYING file.
++ *
++ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
++ * KIND, either express or implied.
++ *
++ * SPDX-License-Identifier: curl
++ *
++ ***************************************************************************/
++
++/*
++ * Source file for the OpenTLS backend: opentls.library, the Open Amiga
++ * platform's TLS client (BearSSL inside). https://github.com/DalsinAI/openamigatls
++ *
++ * OpenTLS moves its bytes through an I/O hook, so the TLS records go
++ * through the connection filter below this one, as with every other
++ * backend. On AmigaOS the library is opened here, the first time a
++ * connection needs it, under a base of its own (Curl_OpenTLSBase), so a
++ * program that also uses opentls.library keeps its own OpenTLSBase.
++ */
++#include "curl_setup.h"
++
++#ifdef USE_OPENTLS
++
++#ifdef __amigaos__
++#define OPENTLS_BASE_NAME Curl_OpenTLSBase
++#include <proto/exec.h>
++#include <proto/opentls.h>
++#else
++#include <utility/hooks.h>
++#include <libraries/opentls.h>
++#include <clib/opentls_protos.h>
++#endif
++
++#include "urldata.h"
++#include "curl_trc.h"
++#include "easy_lock.h"
++#include "vtls/vtls.h"
++#include "vtls/vtls_int.h"
++#include "vtls/opentls.h"
++
++#ifdef __amigaos__
++static struct Library *Curl_OpenTLSBase;
++#endif
++
++/* One context (settings and trust store) is kept for the connections that
++ * use the default trust store or the same CA file: reading a PEM bundle
++ * costs seconds on a 68040. A connection holds a reference to its context;
++ * the cache holds one more. */
++struct ot_ctx_entry {
++  struct OTContext *ctx;
++  char *cafile;          /* NULL: the system trust store */
++  LONG min_version;
++  LONG max_version;
++  int refs;
++  BIT(cacheable);
++};
++
++#ifdef GLOBAL_INIT_IS_THREADSAFE
++static curl_simple_lock ot_lock = CURL_SIMPLE_LOCK_INIT;
++#define OT_LOCK()   curl_simple_lock_lock(&ot_lock)
++#define OT_UNLOCK() curl_simple_lock_unlock(&ot_lock)
++#else
++#define OT_LOCK()   do {} while(0)
++#define OT_UNLOCK() do {} while(0)
++#endif
++
++static struct ot_ctx_entry *ot_cached;
++
++struct opentls_ssl_backend_data {
++  struct ot_ctx_entry *entry;
++  struct OTConnection *conn;
++  struct Hook hook;
++  struct Curl_cfilter *io_cf;  /* the filter and transfer of the call */
++  struct Curl_easy *io_data;   /* that is in progress */
++  int io_blocked;              /* CURL_SSL_IO_NEED_* that would block */
++  size_t send_buffered;        /* plain bytes taken, records not yet sent */
++  BIT(sent_shutdown);
++};
++
++/* moves TLS records through the filter below this one */
++static LONG ot_io(struct opentls_ssl_backend_data *backend,
++                  struct OTIOMessage *msg)
++{
++  struct Curl_cfilter *cf = backend->io_cf;
++  struct Curl_easy *data = backend->io_data;
++  CURLcode result;
++  size_t n = 0;
++
++  if(!cf || !data)
++    return OTERR_IO;
++  if(msg->MethodID == OTIO_READ) {
++    result = Curl_conn_cf_recv(cf->next, data, (char *)msg->Buffer,
++                               (size_t)msg->Length, &n);
++    CURL_TRC_CF(data, cf, "cf->next recv(len=%ld) -> %d, %zu",
++                (long)msg->Length, (int)result, n);
++    if(result == CURLE_AGAIN) {
++      backend->io_blocked |= CURL_SSL_IO_NEED_RECV;
++      return OTERR_WOULDBLOCK;
++    }
++    if(result)
++      return OTERR_IO;
++    return (LONG)n;                  /* 0: end of stream */
++  }
++  result = Curl_conn_cf_send(cf->next, data, msg->Buffer,
++                             (size_t)msg->Length, FALSE, &n);
++  CURL_TRC_CF(data, cf, "cf->next send(len=%ld) -> %d, %zu",
++              (long)msg->Length, (int)result, n);
++  if(result == CURLE_AGAIN || (!result && !n)) {
++    backend->io_blocked |= CURL_SSL_IO_NEED_SEND;
++    return OTERR_WOULDBLOCK;
++  }
++  if(result)
++    return OTERR_IO;
++  return (LONG)n;
++}
++
++#ifdef __amigaos__
++static ULONG ot_hook_entry(register struct Hook *hook __asm("a0"),
++                           register APTR object __asm("a2"),
++                           register struct OTIOMessage *msg __asm("a1"))
++{
++  (void)object;
++  return (ULONG)ot_io(hook->h_Data, msg);
++}
++#else
++static ULONG ot_hook_entry(struct Hook *hook, APTR object, APTR msg)
++{
++  (void)object;
++  return (ULONG)ot_io(hook->h_Data, msg);
++}
++#endif
++
++/* sets the filter and transfer the hook works for, for one call */
++static void ot_io_begin(struct Curl_cfilter *cf, struct Curl_easy *data,
++                        struct opentls_ssl_backend_data *backend)
++{
++  backend->io_cf = cf;
++  backend->io_data = data;
++  backend->io_blocked = CURL_SSL_IO_NEED_NONE;
++}
++
++static void ot_io_end(struct opentls_ssl_backend_data *backend)
++{
++  backend->io_cf = NULL;
++  backend->io_data = NULL;
++}
++
++static bool ot_open_library(void)
++{
++#ifdef __amigaos__
++  struct Library *base, *spare = NULL;
++  OT_LOCK();
++  base = Curl_OpenTLSBase;
++  OT_UNLOCK();
++  if(base)
++    return TRUE;
++  /* opened outside the lock: OpenLibrary() may load it from disk */
++  base = OpenLibrary((CONST_STRPTR)"opentls.library", 1);
++  if(!base)
++    return FALSE;
++  OT_LOCK();
++  if(Curl_OpenTLSBase)
++    spare = base;                    /* another task was first */
++  else
++    Curl_OpenTLSBase = base;
++  OT_UNLOCK();
++  if(spare)
++    CloseLibrary(spare);
++  return TRUE;
++#else
++  return TRUE;
++#endif
++}
++
++static void ot_entry_release(struct ot_ctx_entry *entry)
++{
++  bool last;
++  if(!entry)
++    return;
++  OT_LOCK();
++  last = --entry->refs == 0;
++  OT_UNLOCK();
++  if(last) {
++    OT_FreeContext(entry->ctx);
++    curlx_free(entry->cafile);
++    curlx_free(entry);
++  }
++}
++
++static bool ot_same_file(const char *a, const char *b)
++{
++  if(!a || !b)
++    return a == b;
++  return !strcmp(a, b);
++}
++
++static LONG ot_min_version(struct Curl_easy *data, unsigned char version,
++                           CURLcode *result)
++{
++  *result = CURLE_OK;
++  switch(version) {
++  case CURL_SSLVERSION_DEFAULT:
++  case CURL_SSLVERSION_TLSv1:
++  case CURL_SSLVERSION_TLSv1_0:
++    return OT_TLS10;
++  case CURL_SSLVERSION_TLSv1_1:
++    return OT_TLS11;
++  case CURL_SSLVERSION_TLSv1_2:
++    return OT_TLS12;
++  case CURL_SSLVERSION_TLSv1_3:
++    return OT_TLS13;
++  default:
++    failf(data, "OpenTLS: unsupported minimum TLS version value");
++    *result = CURLE_SSL_CONNECT_ERROR;
++    return 0;
++  }
++}
++
++static LONG ot_max_version(uint32_t version_max)
++{
++  switch(version_max) {
++  case CURL_SSLVERSION_MAX_TLSv1_0:
++    return OT_TLS10;
++  case CURL_SSLVERSION_MAX_TLSv1_1:
++    return OT_TLS11;
++  case CURL_SSLVERSION_MAX_TLSv1_2:
++    return OT_TLS12;
++  default:
++    return 0;                        /* the highest the library has */
++  }
++}
++
++/* a context with these settings: the cached one, or a new one */
++static CURLcode ot_get_context(struct Curl_cfilter *cf,
++                               struct Curl_easy *data,
++                               struct ot_ctx_entry **pentry)
++{
++  struct ssl_primary_config *conn_config =
++    Curl_ssl_cf_get_primary_config(cf);
++  const struct curl_blob *ca_blob = conn_config->ca_info_blob;
++  const char *cafile = ca_blob ? NULL : conn_config->CAfile;
++  struct OTContextConfig config;
++  struct ot_ctx_entry *entry, *old = NULL;
++  CURLcode result;
++  LONG err = OTERR_OK, min, max;
++
++  *pentry = NULL;
++  min = ot_min_version(data, conn_config->version, &result);
++  if(result)
++    return result;
++  max = ot_max_version(conn_config->version_max);
++  if(conn_config->CApath)
++    infof(data, "OpenTLS: CA path %s is not used; set a CA file",
++          conn_config->CApath);
++
++  if(!ca_blob) {
++    OT_LOCK();
++    entry = ot_cached;
++    if(entry && ot_same_file(entry->cafile, cafile) &&
++       entry->min_version == min && entry->max_version == max) {
++      entry->refs++;
++      OT_UNLOCK();
++      *pentry = entry;
++      return CURLE_OK;
++    }
++    OT_UNLOCK();
++  }
++
++  entry = curlx_calloc(1, sizeof(*entry));
++  if(!entry)
++    return CURLE_OUT_OF_MEMORY;
++  if(cafile) {
++    entry->cafile = curlx_strdup(cafile);
++    if(!entry->cafile) {
++      curlx_free(entry);
++      return CURLE_OUT_OF_MEMORY;
++    }
++  }
++  entry->min_version = min;
++  entry->max_version = max;
++  entry->refs = 1;
++  entry->cacheable = !ca_blob;
++
++  memset(&config, 0, sizeof(config));
++  config.Size = sizeof(config);
++  config.MinVersion = min;
++  config.MaxVersion = max;
++  /* a CA file or blob of the program's own replaces the system store, as
++     CURLOPT_CAINFO does with the other backends */
++  if(cafile || ca_blob)
++    config.Flags |= OTCF_NO_SYSTEM_TRUST;
++  config.CAFile = (STRPTR)entry->cafile;
++  entry->ctx = OT_NewContext(&config, &err);
++  if(!entry->ctx) {
++    failf(data, "OpenTLS: no context: %s", (const char *)OT_ErrorString(err));
++    curlx_free(entry->cafile);
++    curlx_free(entry);
++    return err == OTERR_NOMEM ? CURLE_OUT_OF_MEMORY :
++           err == OTERR_TRUSTSTORE ? CURLE_SSL_CACERT_BADFILE :
++           CURLE_SSL_CONNECT_ERROR;
++  }
++  if(ca_blob) {
++    err = OT_AddTrustPEM(entry->ctx, ca_blob->data, (LONG)ca_blob->len);
++    if(err != OTERR_OK) {
++      failf(data, "OpenTLS: CA blob not read: %s",
++            (const char *)OT_ErrorString(err));
++      ot_entry_release(entry);
++      return CURLE_SSL_CACERT_BADFILE;
++    }
++  }
++
++  if(entry->cacheable) {
++    OT_LOCK();
++    old = ot_cached;
++    ot_cached = entry;
++    entry->refs++;
++    OT_UNLOCK();
++    ot_entry_release(old);
++  }
++  *pentry = entry;
++  return CURLE_OK;
++}
++
++/* the CURLcode for a failed handshake */
++static CURLcode ot_map_error(LONG err)
++{
++  switch(err) {
++  case OTERR_NOMEM:
++    return CURLE_OUT_OF_MEMORY;
++  case OTERR_UNTRUSTED:
++  case OTERR_HOSTNAME:
++  case OTERR_EXPIRED:
++  case OTERR_BADCERT:
++  case OTERR_PINNED:
++    return CURLE_PEER_FAILED_VERIFICATION;
++  case OTERR_TRUSTSTORE:
++    return CURLE_SSL_CACERT_BADFILE;
++  default:
++    return CURLE_SSL_CONNECT_ERROR;
++  }
++}
++
++static void ot_failf(struct Curl_easy *data,
++                     struct opentls_ssl_backend_data *backend,
++                     const char *what, LONG err)
++{
++  const char *text = (const char *)OT_GetErrorText(backend->conn);
++  if(!text || !*text)
++    text = (const char *)OT_ErrorString(err);
++  failf(data, "OpenTLS: %s: %s (%ld)", what, text, (long)err);
++}
++
++static CURLcode ot_init_conn(struct Curl_cfilter *cf, struct Curl_easy *data,
++                             struct opentls_ssl_backend_data *backend)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct ssl_primary_config *conn_config =
++    Curl_ssl_cf_get_primary_config(cf);
++  struct ssl_config_data *ssl_config = Curl_ssl_cf_get_config(cf, data);
++  const char *hostname = connssl->peer.sni ? connssl->peer.sni :
++                         connssl->peer.origin->hostname;
++  CURLcode result;
++  LONG err = OTERR_OK;
++
++  if(ssl_config->primary.clientcert || ssl_config->primary.cert_blob ||
++     ssl_config->primary.key || ssl_config->primary.key_blob) {
++    failf(data, "OpenTLS: client certificates are not supported");
++    return CURLE_NOT_BUILT_IN;
++  }
++  if(conn_config->verifystatus) {
++    failf(data, "OpenTLS: certificate status (OCSP) is not supported");
++    return CURLE_SSL_INVALIDCERTSTATUS;
++  }
++  if(!ot_open_library()) {
++    failf(data, "OpenTLS: opentls.library 1 or newer will not open");
++    return CURLE_SSL_ENGINE_INITFAILED;
++  }
++
++  result = ot_get_context(cf, data, &backend->entry);
++  if(result)
++    return result;
++
++  backend->conn = OT_NewConnection(backend->entry->ctx,
++                                   (CONST_STRPTR)hostname, &err);
++  if(!backend->conn) {
++    failf(data, "OpenTLS: no connection for %s: %s", hostname,
++          (const char *)OT_ErrorString(err));
++    return err == OTERR_NOMEM ? CURLE_OUT_OF_MEMORY : CURLE_SSL_CONNECT_ERROR;
++  }
++
++  memset(&backend->hook, 0, sizeof(backend->hook));
++#ifdef __amigaos__
++  backend->hook.h_Entry = (HOOKFUNC)ot_hook_entry;
++#else
++  backend->hook.h_Entry = ot_hook_entry;
++#endif
++  backend->hook.h_Data = backend;
++  err = OT_SetIOHook(backend->conn, &backend->hook);
++  if(err != OTERR_OK) {
++    ot_failf(data, backend, "I/O hook", err);
++    return CURLE_SSL_CONNECT_ERROR;
++  }
++
++  if(connssl->alpn) {
++    struct alpn_proto_buf proto;
++    result = Curl_alpn_to_proto_str(&proto, connssl->alpn);
++    if(result) {
++      failf(data, "Error determining ALPN");
++      return CURLE_SSL_CONNECT_ERROR;
++    }
++    err = OT_SetALPN(backend->conn, (CONST_STRPTR)proto.data);
++    if(err != OTERR_OK) {
++      ot_failf(data, backend, "ALPN", err);
++      return CURLE_SSL_CONNECT_ERROR;
++    }
++    infof(data, VTLS_INFOF_ALPN_OFFER_1STR, proto.data);
++  }
++
++  if(!conn_config->verifypeer)
++    err = OT_SetVerify(backend->conn, OTV_NONE);
++  else if(!conn_config->verifyhost)
++    err = OT_SetVerify(backend->conn, OTV_NO_HOSTNAME);
++  if(err != OTERR_OK) {
++    ot_failf(data, backend, "verify mode", err);
++    return CURLE_SSL_CONNECT_ERROR;
++  }
++  return CURLE_OK;
++}
++
++static CURLcode ot_connect(struct Curl_cfilter *cf, struct Curl_easy *data,
++                           bool *done)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct opentls_ssl_backend_data *backend =
++    (struct opentls_ssl_backend_data *)connssl->backend;
++  CURLcode result;
++  LONG rc;
++
++  DEBUGASSERT(backend);
++  *done = FALSE;
++  connssl->io_need = CURL_SSL_IO_NEED_NONE;
++
++  if(!backend->conn) {
++    result = ot_init_conn(cf, data, backend);
++    if(result)
++      return result;
++    connssl->state = ssl_connection_negotiating;
++    connssl->connecting_state = ssl_connect_2;
++  }
++
++  ot_io_begin(cf, data, backend);
++  rc = OT_Handshake(backend->conn);
++  ot_io_end(backend);
++
++  if(rc == OTERR_WOULDBLOCK) {
++    connssl->io_need = backend->io_blocked ? backend->io_blocked :
++                       CURL_SSL_IO_NEED_RECV;
++    return CURLE_OK;
++  }
++  if(rc != OTERR_OK) {
++    ot_failf(data, backend, "handshake", rc);
++    return ot_map_error(rc);
++  }
++
++  {
++    const char *alpn = (const char *)OT_GetALPN(backend->conn);
++    const char *cipher = (const char *)OT_GetCipher(backend->conn);
++    LONG proto = OT_GetProtocol(backend->conn);
++    size_t alpn_len = alpn ? strlen(alpn) : 0;
++
++    infof(data, "OpenTLS: %s handshake done, cipher %s",
++          proto == OT_TLS13 ? "TLSv1.3" : proto == OT_TLS12 ? "TLSv1.2" :
++          proto == OT_TLS11 ? "TLSv1.1" : "TLSv1.0",
++          cipher ? cipher : "?");
++    if(connssl->alpn) {
++      result = Curl_alpn_set_negotiated(cf, data, connssl,
++                                        (const unsigned char *)alpn,
++                                        alpn_len);
++      if(result)
++        return result;
++    }
++  }
++
++  connssl->connecting_state = ssl_connect_done;
++  connssl->state = ssl_connection_complete;
++  *done = TRUE;
++  return CURLE_OK;
++}
++
++static bool ot_data_pending(struct Curl_cfilter *cf,
++                            const struct Curl_easy *data)
++{
++  const struct ssl_connect_data *ctx = cf->ctx;
++  struct opentls_ssl_backend_data *backend;
++
++  (void)data;
++  DEBUGASSERT(ctx && ctx->backend);
++  backend = (struct opentls_ssl_backend_data *)ctx->backend;
++  return backend->conn && OT_Pending(backend->conn) > 0;
++}
++
++static CURLcode ot_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
++                        char *buf, size_t len, size_t *pnread)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct opentls_ssl_backend_data *backend =
++    (struct opentls_ssl_backend_data *)connssl->backend;
++  LONG n;
++
++  DEBUGASSERT(backend);
++  *pnread = 0;
++  if(len > 0x7FFFFFFF)
++    len = 0x7FFFFFFF;
++
++  ot_io_begin(cf, data, backend);
++  n = OT_Read(backend->conn, buf, (LONG)len);
++  ot_io_end(backend);
++
++  if(n > 0) {
++    *pnread = (size_t)n;
++    return CURLE_OK;
++  }
++  if(n == 0) {                       /* close_notify */
++    connssl->peer_closed = TRUE;
++    return CURLE_OK;
++  }
++  if(n == OTERR_WOULDBLOCK) {
++    if(backend->io_blocked & CURL_SSL_IO_NEED_SEND)
++      connssl->io_need = CURL_SSL_IO_NEED_SEND;
++    return CURLE_AGAIN;
++  }
++  if(n == OTERR_CLOSED) {
++    /* Closed without close_notify. Many servers do this; HTTP's own framing
++       still shows a body that was cut short. */
++    CURL_TRC_CF(data, cf, "peer closed without close_notify");
++    connssl->peer_closed = TRUE;
++    return CURLE_OK;
++  }
++  ot_failf(data, backend, "receive", n);
++  return n == OTERR_NOMEM ? CURLE_OUT_OF_MEMORY : CURLE_RECV_ERROR;
++}
++
++static CURLcode ot_send(struct Curl_cfilter *cf, struct Curl_easy *data,
++                        const void *mem, size_t len, size_t *pnwritten)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct opentls_ssl_backend_data *backend =
++    (struct opentls_ssl_backend_data *)connssl->backend;
++  LONG n;
++
++  DEBUGASSERT(backend);
++  *pnwritten = 0;
++  if(len > 0x7FFFFFFF)
++    len = 0x7FFFFFFF;
++
++  ot_io_begin(cf, data, backend);
++  if(backend->send_buffered) {
++    /* Bytes an earlier call handed over are still in records waiting to
++       go. curl calls again with the same bytes in front: send the records,
++       then report those bytes as written. */
++    DEBUGASSERT(len >= backend->send_buffered);
++    n = OT_Write(backend->conn, mem, 0);
++    ot_io_end(backend);
++    if(n < 0 && n != OTERR_WOULDBLOCK) {
++      ot_failf(data, backend, "send", n);
++      return CURLE_SEND_ERROR;
++    }
++    if(n == OTERR_WOULDBLOCK || (backend->io_blocked & CURL_SSL_IO_NEED_SEND))
++      return CURLE_AGAIN;
++    *pnwritten = backend->send_buffered;
++    backend->send_buffered = 0;
++    return CURLE_OK;
++  }
++
++  n = OT_Write(backend->conn, mem, (LONG)len);
++  ot_io_end(backend);
++  if(n == OTERR_WOULDBLOCK)
++    return CURLE_AGAIN;
++  if(n < 0) {
++    ot_failf(data, backend, "send", n);
++    return n == OTERR_NOMEM ? CURLE_OUT_OF_MEMORY : CURLE_SEND_ERROR;
++  }
++  if(n > 0 && (backend->io_blocked & CURL_SSL_IO_NEED_SEND)) {
++    /* taken, but the socket would not take all of the records */
++    backend->send_buffered = (size_t)n;
++    return CURLE_AGAIN;
++  }
++  *pnwritten = (size_t)n;
++  return CURLE_OK;
++}
++
++static CURLcode ot_shutdown(struct Curl_cfilter *cf, struct Curl_easy *data,
++                            bool send_shutdown, bool *done)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct opentls_ssl_backend_data *backend =
++    (struct opentls_ssl_backend_data *)connssl->backend;
++  CURLcode result = CURLE_OK;
++  LONG rc;
++
++  DEBUGASSERT(backend);
++  *done = TRUE;
++  if(!backend->conn || cf->shutdown || !send_shutdown ||
++     backend->sent_shutdown)
++    goto out;
++
++  connssl->io_need = CURL_SSL_IO_NEED_NONE;
++  ot_io_begin(cf, data, backend);
++  rc = OT_Close(backend->conn);
++  ot_io_end(backend);
++  if(rc == OTERR_WOULDBLOCK) {
++    connssl->io_need = CURL_SSL_IO_NEED_SEND;
++    *done = FALSE;
++    return CURLE_OK;
++  }
++  backend->sent_shutdown = TRUE;
++  if(rc != OTERR_OK)
++    CURL_TRC_CF(data, cf, "shutdown: %ld", (long)rc);
++
++out:
++  cf->shutdown = TRUE;
++  return result;
++}
++
++static void ot_close(struct Curl_cfilter *cf, struct Curl_easy *data)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct opentls_ssl_backend_data *backend =
++    (struct opentls_ssl_backend_data *)connssl->backend;
++
++  (void)data;
++  DEBUGASSERT(backend);
++  if(backend->conn) {
++    OT_FreeConnection(backend->conn);
++    backend->conn = NULL;
++  }
++  ot_entry_release(backend->entry);
++  backend->entry = NULL;
++  backend->send_buffered = 0;
++}
++
++static void *ot_get_internals(struct ssl_connect_data *connssl,
++                              CURLINFO info)
++{
++  struct opentls_ssl_backend_data *backend =
++    (struct opentls_ssl_backend_data *)connssl->backend;
++  (void)info;
++  DEBUGASSERT(backend);
++  return backend->conn;
++}
++
++static size_t ot_version(char *buffer, size_t size)
++{
++  ULONG v = 0;
++  if(ot_open_library())
++    v = OT_Version();
++  if(!v)
++    return curl_msnprintf(buffer, size, "OpenTLS");
++  return curl_msnprintf(buffer, size, "OpenTLS/%lu.%lu",
++                        (unsigned long)(v >> 16),
++                        (unsigned long)(v & 0xFFFF));
++}
++
++static CURLcode ot_random(struct Curl_easy *data, unsigned char *entropy,
++                          size_t length)
++{
++  (void)data;
++  if(length > 0x7FFFFFFF || !ot_open_library())
++    return CURLE_FAILED_INIT;
++  return OT_Random(entropy, (LONG)length) == OTERR_OK ?
++         CURLE_OK : CURLE_FAILED_INIT;
++}
++
++static void ot_cleanup(void)
++{
++  struct ot_ctx_entry *old;
++  OT_LOCK();
++  old = ot_cached;
++  ot_cached = NULL;
++  OT_UNLOCK();
++  ot_entry_release(old);
++#ifdef __amigaos__
++  /* curl_global_cleanup(): every connection is closed by now */
++  if(Curl_OpenTLSBase) {
++    CloseLibrary(Curl_OpenTLSBase);
++    Curl_OpenTLSBase = NULL;
++  }
++#endif
++}
++
++const struct Curl_ssl Curl_ssl_opentls = {
++  { CURLSSLBACKEND_BEARSSL, "opentls" }, /* info: BearSSL inside */
++  SSLSUPP_CAINFO_BLOB |                 /* supports */
++  SSLSUPP_HTTPS_PROXY,
++  sizeof(struct opentls_ssl_backend_data),
++
++  NULL,                            /* init */
++  ot_cleanup,                      /* cleanup */
++  ot_version,                      /* version */
++  ot_shutdown,                     /* shutdown */
++  ot_data_pending,                 /* data_pending */
++  ot_random,                       /* random */
++  NULL,                            /* cert_status_request */
++  ot_connect,                      /* connect */
++  Curl_ssl_adjust_pollset,         /* adjust_pollset */
++  ot_get_internals,                /* get_internals */
++  ot_close,                        /* close_one */
++  NULL,                            /* close_all */
++  NULL,                            /* set_engine */
++  NULL,                            /* set_engine_default */
++  NULL,                            /* engines_list */
++  NULL,                            /* sha256sum */
++  ot_recv,                         /* recv decrypted data */
++  ot_send,                         /* send data to encrypt */
++  NULL,                            /* get_channel_binding */
++};
++
++#endif /* USE_OPENTLS */
+diff -ruN a/lib/vtls/opentls.h b/lib/vtls/opentls.h
+--- a/lib/vtls/opentls.h
++++ b/lib/vtls/opentls.h
+@@ -0,0 +1,33 @@
++#ifndef HEADER_CURL_OPENTLS_H
++#define HEADER_CURL_OPENTLS_H
++/***************************************************************************
++ *                                  _   _ ____  _
++ *  Project                     ___| | | |  _ \| |
++ *                             / __| | | | |_) | |
++ *                            | (__| |_| |  _ <| |___
++ *                             \___|\___/|_| \_\_____|
++ *
++ * Copyright (C) AmigaChrome Team
++ *
++ * This software is licensed as described in the file COPYING, which
++ * you should have received as part of this distribution. The terms
++ * are also available at https://curl.se/docs/copyright.html.
++ *
++ * You may opt to use, copy, modify, merge, publish, distribute and/or sell
++ * copies of the Software, and permit persons to whom the Software is
++ * furnished to do so, under the terms of the COPYING file.
++ *
++ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
++ * KIND, either express or implied.
++ *
++ * SPDX-License-Identifier: curl
++ *
++ ***************************************************************************/
++#include "curl_setup.h"
++
++#ifdef USE_OPENTLS
++
++extern const struct Curl_ssl Curl_ssl_opentls;
++
++#endif /* USE_OPENTLS */
++#endif /* HEADER_CURL_OPENTLS_H */
+diff -ruN a/lib/vtls/vtls.c b/lib/vtls/vtls.c
+--- a/lib/vtls/vtls.c
++++ b/lib/vtls/vtls.c
+@@ -54,6 +54,7 @@
+ #include "vtls/schannel.h"       /* Schannel SSPI version */
+ #include "vtls/mbedtls.h"        /* mbedTLS versions */
+ #include "vtls/rustls.h"         /* Rustls versions */
++#include "vtls/opentls.h"        /* OpenTLS versions */
+ 
+ #include "slist.h"
+ #include "curl_trc.h"
+@@ -694,6 +695,8 @@
+   &Curl_ssl_mbedtls;
+ #elif defined(USE_RUSTLS)
+   &Curl_ssl_rustls;
++#elif defined(USE_OPENTLS)
++  &Curl_ssl_opentls;
+ #elif defined(USE_OPENSSL)
+   &Curl_ssl_openssl;
+ #elif defined(USE_SCHANNEL)
+@@ -721,6 +724,9 @@
+ #ifdef USE_RUSTLS
+   &Curl_ssl_rustls,
+ #endif
++#ifdef USE_OPENTLS
++  &Curl_ssl_opentls,
++#endif
+   NULL
+ };
+ 
