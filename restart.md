@@ -4,7 +4,7 @@ _Written 6 October 2026 at about 23:55 UTC, while all work is paused on @SacredT
 
 ## 19 October 2026: AmiSSL out, OpenTLS in
 
-On @SacredTrees's decision of 19 October (OpenTLS everywhere), curl's HTTPS now goes through opentls.library: `patches/0001-vtls-opentls-backend.patch` adds `lib/vtls/opentls.c` and `CURL_USE_OPENTLS`, and build.sh uses it. `tests/host/host-test.sh` (CI) passes on Linux, plain and under ASan/UBSan. Next: the Amiga build on the build PC, `curltest` on an instance, then OpenBrowser's `scripts/build-webcore.sh` off AmiSSL. Team 2 owns this repo's TLS work.
+On @SacredTrees's decision of 19 October (OpenTLS everywhere), curl's HTTPS now goes through opentls.library: `patches/0001-vtls-opentls-backend.patch` adds `lib/vtls/opentls.c` and `CURL_USE_OPENTLS`, and build.sh uses it. `tests/host/host-test.sh` (CI) passes on Linux, plain and under ASan/UBSan. The 68040 build runs in CI (`tests/amiga/ci-build.sh`) against OpenNDK's open bsdsocket headers (openamigasocket #24, openamigasdk #18; move the openamigasdk pin in ci.yml once #18 merges). Next: `curltest` on an instance, then OpenBrowser's `scripts/build-webcore.sh` off AmiSSL. Team 2 owns this repo's TLS work.
 
 ## What this repo is
 
