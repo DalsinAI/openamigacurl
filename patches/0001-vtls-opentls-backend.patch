@@ -153,7 +153,7 @@ diff -ruN a/lib/curl_setup.h b/lib/curl_setup.h
 diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 --- a/lib/vtls/opentls.c
 +++ b/lib/vtls/opentls.c
-@@ -0,0 +1,733 @@
+@@ -0,0 +1,753 @@
 +/***************************************************************************
 + *                                  _   _ ____  _
 + *  Project                     ___| | | |  _ \| |
@@ -224,6 +224,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  LONG max_version;
 +  int refs;
 +  BIT(cacheable);
++  BIT(no_trust);         /* verifypeer off: no trust store at all */
 +};
 +
 +#ifdef GLOBAL_INIT_IS_THREADSAFE
@@ -329,6 +330,10 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  base = OpenLibrary((CONST_STRPTR)"opentls.library", 1);
 +  if(!base)
 +    return FALSE;
++  if(base->lib_Version == 1 && base->lib_Revision < 2) {
++    CloseLibrary(base);              /* 1.0 and 1.1 lack calls used here */
++    return FALSE;
++  }
 +  OT_LOCK();
 +  if(Curl_OpenTLSBase)
 +    spare = base;                    /* another task was first */
@@ -428,7 +433,8 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +    OT_LOCK();
 +    entry = ot_cached;
 +    if(entry && ot_same_file(entry->cafile, cafile) &&
-+       entry->min_version == min && entry->max_version == max) {
++       entry->min_version == min && entry->max_version == max &&
++       entry->no_trust == !conn_config->verifypeer) {
 +      entry->refs++;
 +      OT_UNLOCK();
 +      *pentry = entry;
@@ -451,6 +457,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  entry->max_version = max;
 +  entry->refs = 1;
 +  entry->cacheable = !ca_blob;
++  entry->no_trust = !conn_config->verifypeer;
 +
 +  memset(&config, 0, sizeof(config));
 +  config.Size = sizeof(config);
@@ -459,6 +466,10 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  /* a CA file or blob of the program's own replaces the system store, as
 +     CURLOPT_CAINFO does with the other backends */
 +  if(cafile || ca_blob)
++    config.Flags |= OTCF_NO_SYSTEM_TRUST;
++  /* nothing is checked against a trust store when verifypeer is off, so
++     an insecure connection does not need the CA bundle installed */
++  if(entry->no_trust)
 +    config.Flags |= OTCF_NO_SYSTEM_TRUST;
 +  config.CAFile = (STRPTR)entry->cafile;
 +  entry->ctx = OT_NewContext(&config, &err);
@@ -538,12 +549,18 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +    failf(data, "OpenTLS: client certificates are not supported");
 +    return CURLE_NOT_BUILT_IN;
 +  }
++  if(!conn_config->verifypeer && conn_config->verifyhost) {
++    /* OpenTLS checks the host name only together with the chain */
++    failf(data, "OpenTLS: CURLOPT_SSL_VERIFYHOST without "
++          "CURLOPT_SSL_VERIFYPEER is not supported; turn both off");
++    return CURLE_NOT_BUILT_IN;
++  }
 +  if(conn_config->verifystatus) {
 +    failf(data, "OpenTLS: certificate status (OCSP) is not supported");
 +    return CURLE_SSL_INVALIDCERTSTATUS;
 +  }
 +  if(!ot_open_library()) {
-+    failf(data, "OpenTLS: opentls.library 1 or newer will not open");
++    failf(data, "OpenTLS: opentls.library 1.2 or newer will not open");
 +    return CURLE_SSL_ENGINE_INITFAILED;
 +  }
 +
@@ -588,7 +605,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  }
 +
 +  if(!conn_config->verifypeer)
-+    err = OT_SetVerify(backend->conn, OTV_NONE);
++    err = OT_SetVerify(backend->conn, OTV_NONE);  /* verifyhost is off too */
 +  else if(!conn_config->verifyhost)
 +    err = OT_SetVerify(backend->conn, OTV_NO_HOSTNAME);
 +  if(err != OTERR_OK) {
@@ -680,6 +697,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +
 +  DEBUGASSERT(backend);
 +  *pnread = 0;
++  connssl->io_need = CURL_SSL_IO_NEED_NONE;
 +  if(len > 0x7FFFFFFF)
 +    len = 0x7FFFFFFF;
 +
@@ -696,6 +714,8 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +    return CURLE_OK;
 +  }
 +  if(n == OTERR_WOULDBLOCK) {
++    /* only a write inside the read changes how the socket is polled;
++       a read that waits for input keeps curl's own pollset */
 +    if(backend->io_blocked & CURL_SSL_IO_NEED_SEND)
 +      connssl->io_need = CURL_SSL_IO_NEED_SEND;
 +    return CURLE_AGAIN;
