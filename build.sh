@@ -1,5 +1,5 @@
 #!/bin/sh
-# openamigacurl: curl (libcurl) with AmiSSL, built for AmigaOS 3.x (68040 + FPU) with the
+# openamigacurl: curl (libcurl) with OpenTLS, built for AmigaOS 3.x (68040 + FPU) with the
 # os32-gcc16 compiler (bebbo's amiga-gcc, GCC 16.2, libnix, libpthread).
 # MIT, Copyright (c) 2026 AmigaChrome Team. The library keeps its own licence.
 #
@@ -9,6 +9,12 @@
 #   TARBALLS     folder holding the upstream tarballs listed in SOURCES
 #                (default ./tarballs); the script checks their SHA-256
 #   JOBS         parallel jobs for CMake/make builds (default 2)
+#   OPENTLS_INCLUDE  openamigatls's include/ folder: opentls.library's headers
+#                (default ../openamigatls/include, beside this repository)
+#   TOOLCHAIN_FILE  CMake toolchain file (default cmake/amigaos3-gcc16.cmake)
+#   NDK_INCLUDE  an OS header folder to search after the compiler's own, such
+#                as an OpenNDK Include_H holding the bsdsocket headers (default:
+#                none, for a compiler that has its own)
 #
 # usage: ./build.sh
 set -eu
@@ -23,6 +29,8 @@ CC="$P/bin/m68k-amigaos-gcc"
 CXX="$P/bin/m68k-amigaos-g++"
 AR="$P/bin/m68k-amigaos-ar"
 CPU=${OS32_CPU_FLAGS:-"-m68040 -m68881 -mcrt=nix20"}
+[ -n "${NDK_INCLUDE:-}" ] && CPU="$CPU -idirafter $(CDPATH= cd -- "$NDK_INCLUDE" && pwd)"
+export OS32_CPU_FLAGS="$CPU"
 CFLAGS="-O2 $CPU -fno-delete-null-pointer-checks -D_DEFAULT_SOURCE=1 -D_POSIX_TIMERS=1 -D_POSIX_REALTIME_SIGNALS=1 -fno-common"
 mkdir -p "$OUT/include" "$OUT/lib" "$WORK"
 
@@ -55,12 +63,16 @@ archive() {
     echo "lib$name.a: $(wc -c < "$OUT/lib/lib$name.a") bytes"
 }
 
-TOOLCHAIN=${TOOLCHAIN_FILE:?set TOOLCHAIN_FILE to openamigabrowser/toolchain/amigaos3-gcc16.cmake}
-AMISSL=${AMISSL_SDK:?set AMISSL_SDK to the Developer folder of the AmiSSL 5 SDK}
+TOOLCHAIN=${TOOLCHAIN_FILE:-"$HERE/cmake/amigaos3-gcc16.cmake"}
+OPENTLS_INC=${OPENTLS_INCLUDE:-"$HERE/../openamigatls/include"}
+[ -f "$OPENTLS_INC/proto/opentls.h" ] || { echo "missing $OPENTLS_INC/proto/opentls.h (set OPENTLS_INCLUDE to openamigatls's include/)"; exit 2; }
+OPENTLS_INC=$(CDPATH= cd -- "$OPENTLS_INC" && pwd)
 # zlib (gzip and deflate answers): openamigaimage's, in DEPS_PREFIX (default PREFIX).
 DEPS=${DEPS_PREFIX:-$OUT}
 [ -f "$DEPS/lib/libz.a" ] || { echo "missing $DEPS/lib/libz.a (zlib, from openamigaimage)"; exit 2; }
 unpack curl curl-8.22.0.tar.xz f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+# patches/: curl's OpenTLS backend (lib/vtls/opentls.c)
+for p in "$HERE"/patches/*.patch; do patch -s -d "$WORK/curl/curl-8.22.0" -p1 < "$p"; done
 # curl's configure checks link programs, and asks for libnet: an empty one will do.
 mkdir -p "$WORK/stublibs" && "$AR" rcs "$WORK/stublibs/libnet.a"
 mkdir -p "$WORK/curl/build" && cd "$WORK/curl/build"
@@ -70,11 +82,14 @@ cmake ../curl-8.22.0 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Rele
     -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF -DHTTP_ONLY=ON \
     -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DUSE_NGHTTP2=OFF -DUSE_LIBIDN2=OFF -DCURL_BROTLI=OFF \
     -DCURL_ZSTD=OFF -DENABLE_THREADED_RESOLVER=OFF -DENABLE_IPV6=OFF -DCURL_DISABLE_LDAP=ON \
-    -DCURL_DISABLE_ALTSVC=ON -DHAVE_PIPE=OFF -DUSE_SSLS_EXPORT=ON \
-    -DHAVE_FCNTL_O_NONBLOCK=OFF -DHAVE_IOCTL_FIONBIO=OFF -DHAVE_IOCTLSOCKET_CAMEL=ON -DHAVE_IOCTLSOCKET_CAMEL_FIONBIO=ON \
-    -DAMISSL_INCLUDE_DIR="$AMISSL/include" -DAMISSL_STUBS_LIBRARY="$AMISSL/lib/AmigaOS3/libamisslstubs.a" \
-    -DAMISSL_AUTO_LIBRARY="$AMISSL/lib/AmigaOS3/libamisslauto.a" \
+    -DCURL_DISABLE_ALTSVC=ON -DHAVE_PIPE=OFF \
+    -DHAVE_FCNTL_O_NONBLOCK=OFF -DHAVE_IOCTL_FIONBIO=OFF -DHAVE_IOCTL_SIOCGIFADDR=OFF -DHAVE_IOCTLSOCKET_CAMEL=ON -DHAVE_IOCTLSOCKET_CAMEL_FIONBIO=ON \
+    -DCURL_USE_OPENSSL=OFF -DCURL_USE_OPENTLS=ON -DOPENTLS_INCLUDE_DIR="$OPENTLS_INC" \
+    -DCURL_CA_BUNDLE=none -DCURL_CA_PATH=none \
     -DCURL_ZLIB=ON -DZLIB_INCLUDE_DIR="$DEPS/include" -DZLIB_LIBRARY="$DEPS/lib/libz.a"
 make -j"$JOBS" libcurl_static
 cp lib/libcurl.a "$OUT/lib/"
 mkdir -p "$OUT/include/curl" && cp ../curl-8.22.0/include/curl/*.h "$OUT/include/curl/"
+# tests/curltest.c, linked: the program a 68040 instance runs to try it
+$CC $CFLAGS -DCURL_STATICLIB -I"$OUT/include" "$HERE/tests/curltest.c" -o "$OUT/curltest" -L"$OUT/lib" -L"$DEPS/lib" -lcurl -lz -lpthread -latomic
+echo "curltest: $(wc -c < "$OUT/curltest") bytes"
