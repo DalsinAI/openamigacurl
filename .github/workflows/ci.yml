@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: DalsinAI/openamigasdk
-          ref: 5616849b727c932d5e4502b650dbb2cd1d666aed
+          ref: 5bfeaea0d004e86afb990fddb591bf0039f09233
           path: openamigasdk
       - name: Fetch the toolchain, curl and zlib (SOURCES)
         run: |
