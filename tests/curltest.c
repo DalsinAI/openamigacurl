@@ -1,4 +1,4 @@
-/* openamigacurl smoke test: fetch an address over HTTP or HTTPS (AmiSSL). */
+/* openamigacurl smoke test: fetch an address over HTTP or HTTPS (OpenTLS). */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -6,26 +6,26 @@
 #include <curl/curl.h>
 #include <utility/tagitem.h>
 #include <proto/exec.h>
-#include <proto/amisslmaster.h>
-#include <libraries/amisslmaster.h>
-#include <libraries/amissl.h>
-#include <amissl/amissl.h>
+#include <proto/bsdsocket.h>
+#include <amitcp/socketbasetags.h>
 
-/* The task's own bsdsocket and AmiSSL bases: each task opens its own. */
-struct Library *SocketBase, *AmiSSLMasterBase, *AmiSSLBase, *AmiSSLExtBase;
+/* The task's own bsdsocket base: each task that calls curl opens its own and
+ * points its errno at the C library's. curl opens opentls.library itself. */
+struct Library *SocketBase;
+
+/* An OpenTLS handshake needs 16 KB of stack, and curl calls it from deep in
+ * its own: libnix gives main() this much. */
+unsigned long __stack = 65536;
 
 static int openNetwork(void)
 {
     if (!(SocketBase = OpenLibrary((CONST_STRPTR)"bsdsocket.library", 4))) return 0;
-    if (!(AmiSSLMasterBase = OpenLibrary((CONST_STRPTR)"amisslmaster.library", AMISSLMASTER_MIN_VERSION))) return 0;
-    return OpenAmiSSLTags(AMISSL_CURRENT_VERSION, AmiSSL_UsesOpenSSLStructs, TRUE, AmiSSL_GetAmiSSLBase, (ULONG)&AmiSSLBase,
-        AmiSSL_GetAmiSSLExtBase, (ULONG)&AmiSSLExtBase, AmiSSL_SocketBase, (ULONG)SocketBase, AmiSSL_ErrNoPtr, (ULONG)&errno, TAG_DONE) == 0;
+    return SocketBaseTags(SBTM_SETVAL(SBTC_ERRNOPTR(sizeof(errno))), (ULONG)&errno,
+        SBTM_SETVAL(SBTC_LOGTAGPTR), (ULONG)"curltest", TAG_DONE) == 0;
 }
 
 static void closeNetwork(void)
 {
-    if (AmiSSLBase) CloseAmiSSL();
-    if (AmiSSLMasterBase) CloseLibrary(AmiSSLMasterBase);
     if (SocketBase) CloseLibrary(SocketBase);
 }
 static size_t got;
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 {
     resetFPCR();
     int i;
-    if (!openNetwork()) { printf("NET_FAIL bsdsocket=%p amisslmaster=%p amissl=%p\n", (void *)SocketBase, (void *)AmiSSLMasterBase, (void *)AmiSSLBase); closeNetwork(); return 20; }
+    if (!openNetwork()) { printf("NET_FAIL bsdsocket=%p\n", (void *)SocketBase); closeNetwork(); return 20; }
     resetFPCR(); /* again: the libraries just opened may have changed it */
     curl_global_init(CURL_GLOBAL_ALL);
     printf("CURL %s\n", curl_version());
