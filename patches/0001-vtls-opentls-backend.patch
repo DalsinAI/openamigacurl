@@ -561,7 +561,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +
 +  memset(&backend->hook, 0, sizeof(backend->hook));
 +#ifdef __amigaos__
-+  backend->hook.h_Entry = (HOOKFUNC)ot_hook_entry;
++  backend->hook.h_Entry = (HOOKFUNC)(void (*)(void))ot_hook_entry;
 +#else
 +  backend->hook.h_Entry = ot_hook_entry;
 +#endif

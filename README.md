@@ -8,7 +8,8 @@ the WebKit browser for AmigaOS 3.2.
 **Status, 19 October 2026:** HTTPS goes through
 [OpenTLS](https://github.com/DalsinAI/openamigatls) (`opentls.library`), the
 Team's own TLS, in place of AmiSSL. The OpenTLS backend passes its host tests
-(below); the Amiga build and a run on an instance are still to do.
+(below), and the 68040 build runs in CI; a run of `curltest` on an
+instance is still to do.
 
 This repository holds the Amiga build, not curl itself: a build script,
 curl's OpenTLS backend as a patch, tests and the upstream licences.
@@ -66,11 +67,11 @@ TLS 1.3 only, and the same uploads and downloads with one socket call in 2, 3
 or 7 answering "would block" and the rest cut short. Through a TLS proxy it
 also fetched GitHub pages and curl's own 2.9 MB release with the right SHA-256.
 
-The backend's Amiga-only code (the I/O hook's registers, the library calls
-under curl's own base) compiles with OpenAmigaGCC 16.2.0-open2 against OpenNDK.
-The whole Amiga build needs the stove's network headers, which the cloud
-doesn't have, so it is still to be run on the build PC, then `curltest` on an
-instance.
+The 68040 build runs in CI too (`tests/amiga/ci-build.sh`): libcurl and
+`curltest` with OpenAmigaGCC 16.2.0-open3 and OpenNDK, whose bsdsocket headers
+are OpenSocket's own (openamigasdk #18), with no vendor header anywhere. curl's
+own CMake toolchain file is `cmake/amigaos3-gcc16.cmake`. `curltest` is still
+to be run on an instance.
 
 ### AmiSSL build, on the bench (before this change)
 
