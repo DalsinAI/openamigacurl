@@ -97,9 +97,8 @@ it.
 
 ### TLS 1.3 and its sessions, on Linux (20 October 2026)
 
-`tests/host/host-test.sh` builds OpenTLS from openamigatls #14 (branch
-`team2/tls13-20261020`; CI checks out that branch until #14 merges, then
-openamigatls main again) and adds TLS 1.3-only servers: `tls_server.py` with
+`tests/host/host-test.sh` builds OpenTLS 1.3 (openamigatls main after
+#14, 5e62884) and adds TLS 1.3-only servers: `tls_server.py` with
 OpenSSL's two tickets per handshake, the same with no tickets, and
 `h2_server.c` over TLS 1.3, with and without tickets. It checks that a TLS 1.3
 server gets TLS 1.3 and a server with both does too, an 8 MB upload and a 20 MB

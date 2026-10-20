@@ -12,13 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # OpenTLS with TLS 1.3 (openamigatls #14, branch team2/tls13-20261020, with OT_SessionHasTicket at aaf3319):
-      # the TLS 1.3 tests need it. Once #14 merges, set this back to
-      # openamigatls main's merge commit.
+      # OpenTLS with TLS 1.3: openamigatls main after #14 (5e62884).
       - uses: actions/checkout@v4
         with:
           repository: DalsinAI/openamigatls
-          ref: team2/tls13-20261020
+          ref: 5e62884b77f8eb1a5056a3eb4e00d45c11a27eaf
           path: openamigatls
       - name: Fetch curl and nghttp2 (SOURCES)
         run: |
@@ -37,12 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # the TLS 1.3 headers of openamigatls #14, as in the host job; back to
-      # openamigatls main's merge commit once #14 merges
+      # the TLS 1.3 headers: openamigatls main after #14 (5e62884), as in the host job
       - uses: actions/checkout@v4
         with:
           repository: DalsinAI/openamigatls
-          ref: team2/tls13-20261020
+          ref: 5e62884b77f8eb1a5056a3eb4e00d45c11a27eaf
           path: openamigatls
       - uses: actions/checkout@v4
         with:

@@ -4,7 +4,7 @@ _Written 6 October 2026 at about 23:55 UTC, while all work is paused on @SacredT
 
 ## 20 October 2026: TLS 1.3 sessions
 
-With OpenTLS 1.3 (openamigatls #14) curl speaks TLS 1.3, and the backend caches a TLS 1.3 session only once `OT_SessionHasTicket()` (new in #14) says its ticket has come; a connection that gets no ticket caches nothing. CI builds OpenTLS from openamigatls branch `team2/tls13-20261020`; set both checkouts in ci.yml back to openamigatls main's merge commit once #14 merges. Stacked on the HTTP/2 PR.
+With OpenTLS 1.3 (openamigatls #14) curl speaks TLS 1.3, and the backend caches a TLS 1.3 session only once `OT_SessionHasTicket()` (new in #14) says its ticket has come; a connection that gets no ticket caches nothing. CI builds OpenTLS from openamigatls main at #14's merge commit (5e62884).
 
 ## 20 October 2026: slim, and HTTP/2
 
