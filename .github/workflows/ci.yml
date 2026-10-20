@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # OpenTLS with TLS 1.3 (openamigatls #14, branch team2/tls13-20261020):
+      # OpenTLS with TLS 1.3 (openamigatls #14, branch team2/tls13-20261020, with OT_SessionHasTicket at aaf3319):
       # the TLS 1.3 tests need it. Once #14 merges, set this back to
       # openamigatls main's merge commit.
       - uses: actions/checkout@v4

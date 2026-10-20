@@ -127,7 +127,7 @@ check "session: a -k session skips no check" "full exit 60" \
     "$(r -k --resolve other:18443:127.0.0.1 https://other:18443/1 $N --resolve other:18443:127.0.0.1 https://other:18443/2)"
 
 # TLS 1.3 sessions: the server's ticket comes after the handshake, and the
-# backend caches the session once the connection has read it.
+# backend caches the session once OT_SessionHasTicket() says it has come.
 U3=https://localhost:18444
 v() { sed -n 's/.*OpenTLS: \(TLSv1\.[0-9]\) handshake done.*/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
 check "1.3 session: later connections resume" "full resumed resumed" "$(r $U3/1 $N $U3/2 $N $U3/3)"
@@ -136,7 +136,7 @@ check "1.3 session: all of them TLS 1.3" "TLSv1.3 TLSv1.3 TLSv1.3" \
 check "1.3 session: parallel, after the first" "full resumed resumed resumed" "$(r $U3/1 $N -Z $U3/2 $U3/3 $U3/4)"
 # t: the backend's own notes (--trace-config ssl) about TLS 1.3 sessions
 t() { "$CURL" -sS --trace-ascii - --trace-config ssl "$@" 2>&1 | sed -n 's/.*\[SSL\] \(TLS 1\.3 session .*\)/\1/p' | tr -d '\r' | paste -sd, -; }
-check "1.3 session: cached on the first read, connection still open" "TLS 1.3 session cached on the first read" \
+check "1.3 session: cached with its ticket, connection still open" "TLS 1.3 session cached, with its ticket" \
     "$(t --noproxy localhost --cacert "$W/cert.pem" -o /dev/null $U3/1)"
 check "1.3 session: not after verify off"     "full full" "$(r $U3/1 $N -k $U3/2)"
 check "1.3 session: not after verify on"      "full full resumed" "$(r -k $U3/1 $N $U3/2 $N $U3/3)"
@@ -149,20 +149,15 @@ check "1.3 session: not with a TLS 1.2 limit" "full full" "$(r $U3/1 $N --tls-ma
 # A TLS 1.3 server that sends no ticket: every handshake is full.
 check "1.3 session: no ticket, no resumption" "full full full" \
     "$(r https://localhost:18448/1 $N https://localhost:18448/2 $N https://localhost:18448/3)"
-# X-Close-Notify: the answer runs to the server's close_notify, which curl
-# reads; then the backend knows whether the session got its ticket.
 # s: what curl's session cache had for each connection (--trace-config ssls)
-OC="--noproxy localhost --cacert $W/cert.pem -o /dev/null -H X-Close-Notify:1"
 s() { "$CURL" -sS --trace-ascii - --trace-config ssls "$@" 2>&1 | sed -n 's/.*\[SSLS\] \(Found\|No\) cached session for.*/\1/p' | tr '\n' ' ' | sed 's/ $//'; }
-check "1.3 session: ticket confirmed at close_notify" \
-    "TLS 1.3 session cached on the first read,TLS 1.3 session has its ticket" "$(t $OC $U3/1000)"
+check "1.3 session: no ticket, nothing cached" "" "$(t $O https://localhost:18448/1000)"
+check "1.3 session: no ticket, nothing cached for the next" "No No No" \
+    "$(s $O https://localhost:18448/1 $N https://localhost:18448/2 $N https://localhost:18448/3)"
+check "1.3 session: with tickets, cached for the next" "No Found Found" "$(s $O $U3/1 $N $U3/2 $N $U3/3)"
+# X-Close-Notify: the answer runs to the server's close_notify
+OC="--noproxy localhost --cacert $W/cert.pem -o /dev/null -H X-Close-Notify:1"
 check "1.3 session: resumed after close_notify" "full resumed" "$(r -H X-Close-Notify:1 $U3/1000 --next $OC $U3/1000)"
-check "1.3 session: no ticket, taken out at close_notify" \
-    "TLS 1.3 session cached on the first read,TLS 1.3 session without a ticket, removed" "$(t $OC https://localhost:18448/1000)"
-# each connection finds nothing cached at its handshake, and its own
-# session at close_notify, which it then takes out
-check "1.3 session: no ticket, nothing cached for the next" "No Found No Found" \
-    "$(s $OC https://localhost:18448/1000 --next $OC https://localhost:18448/1000)"
 
 # HTTP/2: h2_server.c speaks only h2 over TLS 1.2, picked by ALPN.
 H=https://localhost:18446

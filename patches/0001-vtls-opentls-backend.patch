@@ -153,7 +153,7 @@ diff -ruN a/lib/curl_setup.h b/lib/curl_setup.h
 diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 --- a/lib/vtls/opentls.c
 +++ b/lib/vtls/opentls.c
-@@ -0,0 +1,924 @@
+@@ -0,0 +1,879 @@
 +/***************************************************************************
 + *                                  _   _ ____  _
 + *  Project                     ___| | | |  _ \| |
@@ -197,14 +197,12 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 + * then. A TLS 1.3 session is the server's ticket, which comes after the
 + * handshake and is read by OT_Read(); a session taken before it arrives
 + * resumes nothing, and caching one would push out a peer's good session.
-+ * So a TLS 1.3 connection caches its session once, when it first reads
-+ * data (servers send their tickets before their first answer, and a
-+ * session taken earlier is still filled in place by a later ticket while
-+ * the connection lives), or when it closes: after close_notify either
-+ * way, OT_GetSession() answers NULL if no ticket came, and a session
-+ * cached on the first read that never got one is taken out again.
-+ * OpenTLS has no call that says whether a session holds a ticket, so a
-+ * connection that ends without close_notify cannot tell.
++ * So a TLS 1.3 connection takes its session right after the handshake and
++ * keeps it to itself; OT_Read() fills it in place when the first ticket
++ * comes. After each read, until then, OT_SessionHasTicket() (revision 3)
++ * says whether it has, and the session goes to the cache once it has. A
++ * connection that never gets a ticket caches nothing. Tickets only come
++ * in OT_Read(), so there is nothing to check at shutdown or close.
 + */
 +#include "curl_setup.h"
 +
@@ -265,19 +263,11 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  struct Curl_easy *io_data;   /* that is in progress */
 +  int io_blocked;              /* CURL_SSL_IO_NEED_* that would block */
 +  size_t send_buffered;        /* plain bytes taken, records not yet sent */
-+  void *ticket_guess;          /* the session cached before its ticket was
-+                                  seen; compared, never dereferenced */
-+  const void *ticket_share;    /* the share and multi handle of the */
-+  const void *ticket_multi;    /* handshake's transfer, compared only */
-+  unsigned char ticket;        /* OT_TICKET_*: a TLS 1.3 session to cache */
++  struct OTSession *pending;   /* TLS 1.3: the session waiting for its
++                                  ticket, cached once it has one */
 +  BIT(sent_shutdown);
 +  BIT(session_offered);        /* a cached session went to OT_SetSession */
 +};
-+
-+/* where a TLS 1.3 connection is with caching its session */
-+#define OT_TICKET_NONE   0     /* nothing to do: TLS 1.2, or done */
-+#define OT_TICKET_WAIT   1     /* not cached yet */
-+#define OT_TICKET_GUESS  2     /* cached on the first read, ticket unseen */
 +
 +/* moves TLS records through the filter below this one */
 +static LONG ot_io(struct opentls_ssl_backend_data *backend,
@@ -607,8 +597,26 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  Curl_ssl_scache_unlock(data);
 +}
 +
-+/* after the handshake: caches a TLS 1.2 session, which is complete now;
-+   a TLS 1.3 one waits for the server's ticket (ot_ticket_check) */
++/* OT_SessionHasTicket() is new in opentls.library 1.3 (revision 3),
++   which is also the first with TLS 1.3 */
++static bool ot_has_ticket_call(void)
++{
++  return (OT_Version() & 0xFFFF) >= 3;
++}
++
++/* a TLS 1.3 connection's session: cached once it has its ticket */
++static void ot_pending_check(struct Curl_cfilter *cf, struct Curl_easy *data,
++                             struct opentls_ssl_backend_data *backend)
++{
++  if(OT_SessionHasTicket(backend->pending) != 1)
++    return;
++  ot_session_store(cf, data, backend->pending);  /* the cache owns it now */
++  backend->pending = NULL;
++  CURL_TRC_CF(data, cf, "TLS 1.3 session cached, with its ticket");
++}
++
++/* after the handshake: caches a TLS 1.2 session, which is complete now; a
++   TLS 1.3 one waits for the server's ticket, which OT_Read() brings */
 +static void ot_session_keep(struct Curl_cfilter *cf, struct Curl_easy *data,
 +                            struct opentls_ssl_backend_data *backend,
 +                            LONG proto, bool resumed)
@@ -617,65 +625,20 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +
 +  if(!Curl_ssl_scache_use(cf, data))
 +    return;
-+  if(proto == OT_TLS13) {
++  if(proto == OT_TLS13 && ot_has_ticket_call()) {
 +    /* a resumed connection gets a new ticket too: cache that one */
-+    backend->ticket = OT_TICKET_WAIT;
-+    backend->ticket_share = data->share;
-+    backend->ticket_multi = data->multi;
++    backend->pending = OT_GetSession(backend->conn);
++    if(backend->pending)
++      ot_pending_check(cf, data, backend);
 +    return;
 +  }
++  /* TLS 1.2; or a library too old to say whether a session has a ticket,
++     which is also too old for TLS 1.3 */
 +  if(resumed)
 +    return;
 +  s = OT_GetSession(backend->conn);
 +  if(s)                              /* NULL: the server gave no session ID */
 +    ot_session_store(cf, data, s);
-+}
-+
-+/* A TLS 1.3 connection caches its session: once when it has read data
-+   (closed FALSE), and once more when it is closed (closed TRUE: after
-+   close_notify sent or read). OpenTLS has no call that says whether a
-+   session holds a ticket; only on a closed connection does
-+   OT_GetSession() tell, by answering NULL when none came. */
-+static void ot_ticket_check(struct Curl_cfilter *cf, struct Curl_easy *data,
-+                            struct opentls_ssl_backend_data *backend,
-+                            bool closed)
-+{
-+  struct ssl_connect_data *connssl = cf->ctx;
-+  struct OTSession *s = OT_GetSession(backend->conn);
-+
-+  if(!closed) {
-+    /* almost always holding its ticket by now; if not, filled in place by
-+       a later one, so it is cached as it is */
-+    backend->ticket = s ? OT_TICKET_GUESS : OT_TICKET_NONE;
-+    backend->ticket_guess = s;
-+    if(s) {
-+      ot_session_store(cf, data, s);
-+      CURL_TRC_CF(data, cf, "TLS 1.3 session cached on the first read");
-+    }
-+    return;
-+  }
-+  if(s) {
-+    if(backend->ticket == OT_TICKET_GUESS)
-+      OT_FreeSession(s);             /* the cached one was filled in place */
-+    else
-+      ot_session_store(cf, data, s);
-+    CURL_TRC_CF(data, cf, "TLS 1.3 session has its ticket");
-+  }
-+  else if(backend->ticket == OT_TICKET_GUESS) {
-+    /* no ticket ever came: take that session out of the cache, unless
-+       another connection has replaced it since */
-+    bool ours;
-+    Curl_ssl_scache_lock(data);
-+    ours = Curl_ssl_scache_get_obj(cf, data, connssl->peer.scache_key) ==
-+           backend->ticket_guess;
-+    Curl_ssl_scache_unlock(data);
-+    if(ours)
-+      Curl_ssl_scache_remove_all(cf, data, connssl->peer.scache_key);
-+    CURL_TRC_CF(data, cf, "TLS 1.3 session without a ticket, %s",
-+                ours ? "removed" : "already replaced");
-+  }
-+  backend->ticket = OT_TICKET_NONE;
-+  backend->ticket_guess = NULL;
 +}
 +
 +static CURLcode ot_init_conn(struct Curl_cfilter *cf, struct Curl_easy *data,
@@ -858,15 +821,15 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  n = OT_Read(backend->conn, buf, (LONG)len);
 +  ot_io_end(backend);
 +
++  /* a ticket may have come in this read, whatever it answers */
++  if(backend->pending)
++    ot_pending_check(cf, data, backend);
++
 +  if(n > 0) {
-+    if(backend->ticket == OT_TICKET_WAIT)
-+      ot_ticket_check(cf, data, backend, FALSE);
 +    *pnread = (size_t)n;
 +    return CURLE_OK;
 +  }
 +  if(n == 0) {                       /* close_notify */
-+    if(backend->ticket != OT_TICKET_NONE)
-+      ot_ticket_check(cf, data, backend, TRUE);
 +    connssl->peer_closed = TRUE;
 +    return CURLE_OK;
 +  }
@@ -964,13 +927,6 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  backend->sent_shutdown = TRUE;
 +  if(rc != OTERR_OK)
 +    CURL_TRC_CF(data, cf, "shutdown: %ld", (long)rc);
-+  else if(backend->ticket != OT_TICKET_NONE &&
-+          data->share == backend->ticket_share &&
-+          data->multi == backend->ticket_multi)
-+    /* curl mostly shuts connections down with a handle of its own, which
-+       finds the right session cache only when it has the same share and
-+       multi handle as the connection's transfers */
-+    ot_ticket_check(cf, data, backend, TRUE);
 +
 +out:
 +  cf->shutdown = TRUE;
@@ -985,6 +941,11 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +
 +  (void)data;
 +  DEBUGASSERT(backend);
++  if(backend->pending) {
++    /* still waiting: it has no ticket, and gets none after this */
++    OT_FreeSession(backend->pending);
++    backend->pending = NULL;
++  }
 +  if(backend->conn) {
 +    OT_FreeConnection(backend->conn);
 +    backend->conn = NULL;
@@ -993,12 +954,6 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  backend->entry = NULL;
 +  backend->send_buffered = 0;
 +  backend->session_offered = FALSE;
-+  /* a connection closed without close_notify cannot tell whether its
-+     session has a ticket: one cached on the first read stays */
-+  backend->ticket = OT_TICKET_NONE;
-+  backend->ticket_guess = NULL;
-+  backend->ticket_share = NULL;
-+  backend->ticket_multi = NULL;
 +}
 +
 +static void *ot_get_internals(struct ssl_connect_data *connssl,
