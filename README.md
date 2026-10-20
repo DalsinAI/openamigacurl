@@ -26,8 +26,8 @@ for the library goes to its authors; see `upstream/` for their notices.
 ## What the Amiga port changes
 
 - **An OpenTLS backend** (`patches/0001-vtls-opentls-backend.patch`): `lib/vtls/opentls.c`, a TLS backend for curl on `opentls.library` 1.2 or newer, and the CMake option `CURL_USE_OPENTLS` that turns it on. The TLS records go through curl's own connection filters by OpenTLS's I/O hook, so proxies and non-blocking sockets work as with any other backend. Otherwise curl's own AmigaOS support (`-DAMIGA=ON`): HTTP and HTTPS only, no threaded resolver (each AmigaOS task needs its own bsdsocket base) and no IPv6.
-- **What the backend does:** TLS 1.0 to 1.2 (OpenTLS has no 1.3 yet; a server that wants only 1.3 is refused with a clear error), ALPN, SNI, certificate chains checked against `S:OpenTLS/ca-bundle.pem` and `ENVARC:OpenTLS/certs/`, host names and IP addresses. `CURLOPT_CAINFO` and `CURLOPT_CAINFO_BLOB` replace that store, as with other backends; `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST` turn checks off (the host name only together with the chain: VERIFYHOST on with VERIFYPEER off is refused), and with VERIFYPEER off no trust store is needed. The trust store is read once and shared by connections with the same settings (reading it costs seconds on a 68040).
-- **Not yet:** client certificates, `CURLOPT_PINNEDPUBLICKEY` (OpenTLS pins whole certificates, curl pins keys), cipher lists, OCSP stapling, certificate details (`CURLOPT_CERTINFO`) and TLS session resumption across connections (curl's session cache; OpenTLS has its own sessions). Asking for one gives an error, never a silent downgrade.
+- **What the backend does:** TLS 1.0 to 1.2 (OpenTLS has no 1.3 yet; a server that wants only 1.3 is refused with a clear error), ALPN, SNI, certificate chains checked against `S:OpenTLS/ca-bundle.pem` and `ENVARC:OpenTLS/certs/`, host names and IP addresses. `CURLOPT_CAINFO` and `CURLOPT_CAINFO_BLOB` replace that store, as with other backends; `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST` turn checks off (the host name only together with the chain: VERIFYHOST on with VERIFYPEER off is refused), and with VERIFYPEER off no trust store is needed. The trust store is read once and shared by connections with the same settings (reading it costs seconds on a 68040). TLS sessions are resumed: the first full handshake with a server leaves its session in curl's session cache, and later connections to that server resume it, skipping the key exchange and the certificate check, which are most of a handshake's time on a 68040. A session is only offered to a connection with the same host, port, verify settings, trust store and TLS versions, so a session made with `-k` never lets a checked connection through unchecked; `CURLOPT_SSL_SESSIONID_CACHE` 0 turns it off.
+- **Not yet:** client certificates, `CURLOPT_PINNEDPUBLICKEY` (OpenTLS pins whole certificates, curl pins keys), cipher lists, OCSP stapling and certificate details (`CURLOPT_CERTINFO`). Asking for one gives an error, never a silent downgrade.
 - **Sockets are not file descriptors.** curl's configure finds libnix's `fcntl()`, `ioctl()` and `pipe()` and would use them on bsdsocket sockets, which fails (every transfer then stops with "Out of memory" while curl makes its wake-up socket pair). The script tells curl to use `IoctlSocket(FIONBIO)` and no `pipe()`, so the wake-up pair is a loopback TCP pair through bsdsocket.library.
 - **Your program opens the network.** Each task that calls curl opens `bsdsocket.library` itself, sets the global `SocketBase` and points bsdsocket's errno at the C library's (`SocketBaseTags(SBTM_SETVAL(SBTC_ERRNOPTR(sizeof(errno))), &errno, ...)`); AmiSSL used to do that last part through `AmiSSL_ErrNoPtr`. curl opens `opentls.library` itself, under a base of its own, so a program that uses OpenTLS directly keeps its own `OpenTLSBase`. `tests/curltest.c` shows how.
 - **Stack:** an OpenTLS handshake needs 16 KB of the calling task's stack, and curl calls it from deep in its own code; give the task 64 KB.
@@ -64,8 +64,14 @@ checks an 8 MB upload and a 20 MB download byte for byte, a server that closes
 without close_notify, connection reuse, changing CA files, a wrong host name
 (refused, and allowed with `-k`), an empty trust store, a server that wants
 TLS 1.3 only, and the same uploads and downloads with one socket call in 2, 3
-or 7 answering "would block" and the rest cut short. Through a TLS proxy it
-also fetched GitHub pages and curl's own 2.9 MB release with the right SHA-256.
+or 7 answering "would block" and the rest cut short. Since 20 October it also
+checks session resumption: the second and later connections to a server
+resume (also in parallel, and with sockets that would block), and a connection
+with verification turned on or off, another CA file, another host name or
+`--no-sessionid` does a full handshake; a session made with `-k` for a host
+name the certificate does not match is not used to skip the check. Through a
+TLS proxy it also fetched GitHub pages and curl's own 2.9 MB release with the
+right SHA-256.
 
 The 68040 build runs in CI too (`tests/amiga/ci-build.sh`): libcurl and
 `curltest` with OpenAmigaGCC 16.2.0-open3 and OpenNDK, whose bsdsocket headers
