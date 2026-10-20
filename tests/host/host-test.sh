@@ -74,6 +74,24 @@ r=0; c -o /dev/null --cacert /dev/null https://localhost:18443/1 2>/dev/null || 
 check "no trusted certificates"  77 "$r"
 r=0; c -o /dev/null https://localhost:18444/1 2>/dev/null || r=$?
 check "TLS 1.3-only server"      35 "$r"
+# Sessions: each line is one curl run, one connection per URL; hs lists
+# whether each handshake was full or resumed the session cached for that peer.
+hs() { sed -n -e 's/.*handshake done, session resumed.*/resumed/p' \
+              -e 's/.*handshake done, full handshake.*/full/p' | tr '\n' ' ' | sed 's/ $//'; }
+U=https://localhost:18443
+O="--noproxy localhost,127.0.0.1,other --cacert $W/cert.pem -o /dev/null -H Connection:close"
+N="--next $O"
+r() { x=0; o=$("$CURL" -sS -v $O "$@" 2>&1) || x=$?; echo "$(echo "$o" | hs)$([ $x = 0 ] || echo " exit $x")"; }
+check "session: later connections resume"   "full resumed resumed" "$(r $U/1 $N $U/2 $N $U/3)"
+check "session: parallel, after the first"  "full resumed resumed resumed" "$(r $U/1 $N -Z $U/2 $U/3 $U/4)"
+check "session: not after verify off"       "full full" "$(r $U/1 $N -k $U/2)"
+check "session: not after verify on"        "full full resumed" "$(r -k $U/1 $N $U/2 $N $U/3)"
+check "session: not with another CA file"   "full full resumed" "$(r $U/1 $N --cacert cert2.pem $U/2 $N $U/3)"
+check "session: not with --no-sessionid"    "full full resumed" "$(r $U/1 $N --no-sessionid $U/2 $N $U/3)"
+check "session: not for another host"       "full full" "$(r $U/1 $N -k --resolve other:18443:127.0.0.1 https://other:18443/2)"
+check "session: a -k session skips no check" "full exit 60" \
+    "$(r -k --resolve other:18443:127.0.0.1 https://other:18443/1 $N --resolve other:18443:127.0.0.1 https://other:18443/2)"
+
 for e in 2 3 7; do
     ASAN_LIB=""
     [ -n "$SAN" ] && ASAN_LIB="$(cc -print-file-name=libasan.so):"
@@ -81,6 +99,8 @@ for e in 2 3 7; do
         "$(EAGAIN_EVERY=$e LD_PRELOAD="$ASAN_LIB$W/eagain.so" "$CURL" --noproxy '*' -sS --cacert cert.pem --data-binary @up.bin https://localhost:18443/post)"
     check "GET, 1 in $e socket calls stalls" "200 3000000" \
         "$(EAGAIN_EVERY=$e LD_PRELOAD="$ASAN_LIB$W/eagain.so" "$CURL" --noproxy '*' -sS --cacert cert.pem -o /dev/null -w '%{http_code} %{size_download}' https://localhost:18443/3000000)"
+    check "resumed, 1 in $e socket calls stalls" "full resumed" \
+        "$(EAGAIN_EVERY=$e LD_PRELOAD="$ASAN_LIB$W/eagain.so" "$CURL" -sS -v $O $U/300000 $N $U/300000 2>&1 | hs)"
 done
 [ "$FAIL" = 0 ] && echo "all passed"
 exit "$FAIL"
