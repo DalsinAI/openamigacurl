@@ -1,6 +1,7 @@
 #!/bin/sh
-# openamigacurl: curl (libcurl) with OpenTLS, built for AmigaOS 3.x (68040 + FPU) with the
-# os32-gcc16 compiler (bebbo's amiga-gcc, GCC 16.2, libnix, libpthread).
+# openamigacurl: curl (libcurl) with OpenTLS and HTTP/2 (nghttp2), built for
+# AmigaOS 3.x (68040 + FPU) with the os32-gcc16 compiler (bebbo's amiga-gcc,
+# GCC 16.2, libnix, libpthread). HTTP and HTTPS only.
 # MIT, Copyright (c) 2026 AmigaChrome Team. The library keeps its own licence.
 #
 #   OS32_GCC16   compiler root holding prefix/ and compat/
@@ -70,6 +71,14 @@ OPENTLS_INC=$(CDPATH= cd -- "$OPENTLS_INC" && pwd)
 # zlib (gzip and deflate answers): openamigaimage's, in DEPS_PREFIX (default PREFIX).
 DEPS=${DEPS_PREFIX:-$OUT}
 [ -f "$DEPS/lib/libz.a" ] || { echo "missing $DEPS/lib/libz.a (zlib, from openamigaimage)"; exit 2; }
+# nghttp2 (HTTP/2): its library only (lib/), no programs. It is portable C with
+# no byte-order or word-size assumptions of its own; it takes htonl() and
+# friends from <netinet/in.h>, which on the 68k are no-ops.
+unpack nghttp2 nghttp2-1.70.0.tar.xz e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2
+NG="$WORK/nghttp2/nghttp2-1.70.0"
+XFLAGS="-DNDEBUG -DNGHTTP2_STATICLIB -DBUILDING_NGHTTP2 -DHAVE_NETINET_IN_H -I$NG/lib/includes" \
+    archive nghttp2 "$NG"/lib/*.c
+mkdir -p "$OUT/include/nghttp2" && cp "$NG"/lib/includes/nghttp2/nghttp2.h "$NG"/lib/includes/nghttp2/nghttp2ver.h "$OUT/include/nghttp2/"
 unpack curl curl-8.22.0.tar.xz f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 # patches/: curl's OpenTLS backend (lib/vtls/opentls.c)
 for p in "$HERE"/patches/*.patch; do patch -s -d "$WORK/curl/curl-8.22.0" -p1 < "$p"; done
@@ -79,10 +88,22 @@ mkdir -p "$WORK/curl/build" && cd "$WORK/curl/build"
 cmake ../curl-8.22.0 -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE="-O2 -fno-delete-null-pointer-checks" \
     -DCMAKE_EXE_LINKER_FLAGS="$CPU -L$WORK/stublibs" -DCMAKE_INSTALL_PREFIX="$OUT" -DAMIGA=ON \
     -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF \
-    -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF -DHTTP_ONLY=ON \
-    -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DUSE_NGHTTP2=OFF -DUSE_LIBIDN2=OFF -DCURL_BROTLI=OFF \
-    -DCURL_ZSTD=OFF -DENABLE_THREADED_RESOLVER=OFF -DENABLE_IPV6=OFF -DCURL_DISABLE_LDAP=ON \
-    -DCURL_DISABLE_ALTSVC=ON -DHAVE_PIPE=OFF \
+    -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF \
+    -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DUSE_LIBIDN2=OFF -DCURL_BROTLI=OFF \
+    -DCURL_ZSTD=OFF -DENABLE_THREADED_RESOLVER=OFF -DENABLE_IPV6=OFF -DENABLE_UNIX_SOCKETS=OFF \
+    -DUSE_NGHTTP2=ON -DNGHTTP2_USE_STATIC_LIBS=ON -DNGHTTP2_INCLUDE_DIR="$NG/lib/includes" \
+    -DNGHTTP2_LIBRARY="$OUT/lib/libnghttp2.a" \
+    -DHTTP_ONLY=ON -DCURL_DISABLE_FTP=ON -DCURL_DISABLE_FILE=ON -DCURL_DISABLE_LDAP=ON \
+    -DCURL_DISABLE_LDAPS=ON -DCURL_DISABLE_RTSP=ON -DCURL_DISABLE_DICT=ON -DCURL_DISABLE_TELNET=ON \
+    -DCURL_DISABLE_TFTP=ON -DCURL_DISABLE_POP3=ON -DCURL_DISABLE_IMAP=ON -DCURL_DISABLE_SMTP=ON \
+    -DCURL_DISABLE_GOPHER=ON -DCURL_DISABLE_MQTT=ON -DCURL_DISABLE_IPFS=ON -DCURL_DISABLE_WEBSOCKETS=ON \
+    -DCURL_DISABLE_ALTSVC=ON -DCURL_DISABLE_HSTS=ON -DCURL_DISABLE_COOKIES=ON -DCURL_DISABLE_DOH=ON \
+    -DCURL_DISABLE_MIME=ON -DCURL_DISABLE_FORM_API=ON -DCURL_DISABLE_NETRC=ON \
+    -DCURL_DISABLE_AWS=ON -DCURL_DISABLE_BEARER_AUTH=ON -DCURL_DISABLE_KERBEROS_AUTH=ON \
+    -DCURL_DISABLE_NEGOTIATE_AUTH=ON -DCURL_ENABLE_NTLM=OFF -DCURL_DISABLE_HEADERS_API=ON \
+    -DCURL_DISABLE_GETOPTIONS=ON -DCURL_DISABLE_LIBCURL_OPTION=ON -DCURL_DISABLE_PROGRESS_METER=ON \
+    -DCURL_DISABLE_SHUFFLE_DNS=ON -DCURL_DISABLE_BINDLOCAL=ON -DCURL_DISABLE_PARSEDATE=ON \
+    -DHAVE_PIPE=OFF \
     -DHAVE_FCNTL_O_NONBLOCK=OFF -DHAVE_IOCTL_FIONBIO=OFF -DHAVE_IOCTL_SIOCGIFADDR=OFF -DHAVE_IOCTLSOCKET_CAMEL=ON -DHAVE_IOCTLSOCKET_CAMEL_FIONBIO=ON \
     -DCURL_USE_OPENSSL=OFF -DCURL_USE_OPENTLS=ON -DOPENTLS_INCLUDE_DIR="$OPENTLS_INC" \
     -DCURL_CA_BUNDLE=none -DCURL_CA_PATH=none \
@@ -91,5 +112,5 @@ make -j"$JOBS" libcurl_static
 cp lib/libcurl.a "$OUT/lib/"
 mkdir -p "$OUT/include/curl" && cp ../curl-8.22.0/include/curl/*.h "$OUT/include/curl/"
 # tests/curltest.c, linked: the program a 68040 instance runs to try it
-$CC $CFLAGS -DCURL_STATICLIB -I"$OUT/include" "$HERE/tests/curltest.c" -o "$OUT/curltest" -L"$OUT/lib" -L"$DEPS/lib" -lcurl -lz -lpthread -latomic
+$CC $CFLAGS -DCURL_STATICLIB -I"$OUT/include" "$HERE/tests/curltest.c" -o "$OUT/curltest" -L"$OUT/lib" -L"$DEPS/lib" -lcurl -lnghttp2 -lz -lpthread -latomic
 echo "curltest: $(wc -c < "$OUT/curltest") bytes"
