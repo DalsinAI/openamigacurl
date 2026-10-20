@@ -2,6 +2,14 @@
 
 _Written 6 October 2026 at about 23:55 UTC, while all work is paused on @SacredTrees's word (23:28 UTC). Read this first when work resumes; the newest capsule and the live PR list win if they disagree._
 
+## 20 October 2026: TLS 1.3 sessions
+
+With OpenTLS 1.3 (openamigatls #14) curl speaks TLS 1.3, and the backend caches a TLS 1.3 session only once `OT_SessionHasTicket()` (new in #14) says its ticket has come; a connection that gets no ticket caches nothing. CI builds OpenTLS from openamigatls main at #14's merge commit (5e62884).
+
+## 20 October 2026: slim, and HTTP/2
+
+curl is built with HTTP and HTTPS only and without the features OpenBrowser's engine does not use (README lists what stays and why), and with HTTP/2 through nghttp2 1.70.0 (pinned in SOURCES, fetched at build time; THIRD_PARTY_NOTICES.md). The host test runs HTTP/2 against `tests/host/h2_server.c`: downloads, uploads, multiplexing, fallback to HTTP/1.1 and resumption. Stacked on the TLS resumption PR.
+
 ## 20 October 2026: TLS sessions resumed
 
 The OpenTLS backend resumes TLS sessions through curl's own session cache (one OTSession per peer key, kept as the peer's object), so every connection after the first to a server skips the key exchange and the certificate check. The host test checks it, including that a changed verify setting, CA file or host name gets a full handshake.

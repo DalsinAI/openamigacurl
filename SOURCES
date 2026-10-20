@@ -5,6 +5,11 @@ curl 8.22.0
   from:   https://curl.se/download/curl-8.22.0.tar.xz
   sha256: f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 
+nghttp2 1.70.0 (HTTP/2; MIT licence, see THIRD_PARTY_NOTICES.md)
+  file:   nghttp2-1.70.0.tar.xz
+  from:   https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.xz
+  sha256: e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2
+
 zlib 1.3.1 (tests/amiga/ci-build.sh only; build.sh takes openamigaimage's)
   file:   zlib-1.3.1.tar.xz
   from:   https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.xz

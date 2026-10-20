@@ -153,7 +153,7 @@ diff -ruN a/lib/curl_setup.h b/lib/curl_setup.h
 diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 --- a/lib/vtls/opentls.c
 +++ b/lib/vtls/opentls.c
-@@ -0,0 +1,820 @@
+@@ -0,0 +1,879 @@
 +/***************************************************************************
 + *                                  _   _ ____  _
 + *  Project                     ___| | | |  _ \| |
@@ -192,6 +192,17 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 + * peer key (host, port, verify settings, trust store, TLS versions and
 + * library version), kept as the peer's object. OT_SetSession() copies it,
 + * so every new connection to that peer offers the same one.
++ *
++ * A TLS 1.2 session is complete when the handshake ends and is cached
++ * then. A TLS 1.3 session is the server's ticket, which comes after the
++ * handshake and is read by OT_Read(); a session taken before it arrives
++ * resumes nothing, and caching one would push out a peer's good session.
++ * So a TLS 1.3 connection takes its session right after the handshake and
++ * keeps it to itself; OT_Read() fills it in place when the first ticket
++ * comes. After each read, until then, OT_SessionHasTicket() (revision 3)
++ * says whether it has, and the session goes to the cache once it has. A
++ * connection that never gets a ticket caches nothing. Tickets only come
++ * in OT_Read(), so there is nothing to check at shutdown or close.
 + */
 +#include "curl_setup.h"
 +
@@ -252,6 +263,8 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  struct Curl_easy *io_data;   /* that is in progress */
 +  int io_blocked;              /* CURL_SSL_IO_NEED_* that would block */
 +  size_t send_buffered;        /* plain bytes taken, records not yet sent */
++  struct OTSession *pending;   /* TLS 1.3: the session waiting for its
++                                  ticket, cached once it has one */
 +  BIT(sent_shutdown);
 +  BIT(session_offered);        /* a cached session went to OT_SetSession */
 +};
@@ -571,23 +584,61 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +    CURL_TRC_CF(data, cf, "cached session not offered: %ld", (long)err);
 +}
 +
-+/* caches the session of a full handshake for the next connection */
-+static void ot_session_keep(struct Curl_cfilter *cf, struct Curl_easy *data,
-+                            struct opentls_ssl_backend_data *backend)
++/* makes s the peer's cached session, in place of an older one */
++static void ot_session_store(struct Curl_cfilter *cf, struct Curl_easy *data,
++                             struct OTSession *s)
 +{
 +  struct ssl_connect_data *connssl = cf->ctx;
++
++  Curl_ssl_scache_lock(data);
++  /* frees s if it cannot keep it */
++  (void)Curl_ssl_scache_add_obj(cf, data, connssl->peer.scache_key, s,
++                                ot_session_free);
++  Curl_ssl_scache_unlock(data);
++}
++
++/* OT_SessionHasTicket() is new in opentls.library 1.3 (revision 3),
++   which is also the first with TLS 1.3 */
++static bool ot_has_ticket_call(void)
++{
++  return (OT_Version() & 0xFFFF) >= 3;
++}
++
++/* a TLS 1.3 connection's session: cached once it has its ticket */
++static void ot_pending_check(struct Curl_cfilter *cf, struct Curl_easy *data,
++                             struct opentls_ssl_backend_data *backend)
++{
++  if(OT_SessionHasTicket(backend->pending) != 1)
++    return;
++  ot_session_store(cf, data, backend->pending);  /* the cache owns it now */
++  backend->pending = NULL;
++  CURL_TRC_CF(data, cf, "TLS 1.3 session cached, with its ticket");
++}
++
++/* after the handshake: caches a TLS 1.2 session, which is complete now; a
++   TLS 1.3 one waits for the server's ticket, which OT_Read() brings */
++static void ot_session_keep(struct Curl_cfilter *cf, struct Curl_easy *data,
++                            struct opentls_ssl_backend_data *backend,
++                            LONG proto, bool resumed)
++{
 +  struct OTSession *s;
 +
 +  if(!Curl_ssl_scache_use(cf, data))
 +    return;
++  if(proto == OT_TLS13 && ot_has_ticket_call()) {
++    /* a resumed connection gets a new ticket too: cache that one */
++    backend->pending = OT_GetSession(backend->conn);
++    if(backend->pending)
++      ot_pending_check(cf, data, backend);
++    return;
++  }
++  /* TLS 1.2; or a library too old to say whether a session has a ticket,
++     which is also too old for TLS 1.3 */
++  if(resumed)
++    return;
 +  s = OT_GetSession(backend->conn);
-+  if(!s)
-+    return;                          /* the server gave no session ID */
-+  Curl_ssl_scache_lock(data);
-+  /* replaces the peer's older session, and frees s if it cannot keep it */
-+  (void)Curl_ssl_scache_add_obj(cf, data, connssl->peer.scache_key, s,
-+                                ot_session_free);
-+  Curl_ssl_scache_unlock(data);
++  if(s)                              /* NULL: the server gave no session ID */
++    ot_session_store(cf, data, s);
 +}
 +
 +static CURLcode ot_init_conn(struct Curl_cfilter *cf, struct Curl_easy *data,
@@ -724,8 +775,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +          proto == OT_TLS11 ? "TLSv1.1" : "TLSv1.0",
 +          resumed ? "session resumed" : "full handshake",
 +          cipher ? cipher : "?");
-+    if(!resumed)
-+      ot_session_keep(cf, data, backend);
++    ot_session_keep(cf, data, backend, proto, resumed);
 +    if(connssl->alpn) {
 +      result = Curl_alpn_set_negotiated(cf, data, connssl,
 +                                        (const unsigned char *)alpn,
@@ -770,6 +820,10 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  ot_io_begin(cf, data, backend);
 +  n = OT_Read(backend->conn, buf, (LONG)len);
 +  ot_io_end(backend);
++
++  /* a ticket may have come in this read, whatever it answers */
++  if(backend->pending)
++    ot_pending_check(cf, data, backend);
 +
 +  if(n > 0) {
 +    *pnread = (size_t)n;
@@ -887,6 +941,11 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +
 +  (void)data;
 +  DEBUGASSERT(backend);
++  if(backend->pending) {
++    /* still waiting: it has no ticket, and gets none after this */
++    OT_FreeSession(backend->pending);
++    backend->pending = NULL;
++  }
 +  if(backend->conn) {
 +    OT_FreeConnection(backend->conn);
 +    backend->conn = NULL;

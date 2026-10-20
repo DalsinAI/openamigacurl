@@ -6,42 +6,47 @@ on:
 
 jobs:
   host:
-    # curl with patches/ and OpenTLS's host build, against a local HTTPS
-    # server (tests/host/host-test.sh). The Amiga build is build.sh's.
+    # curl with patches/, OpenTLS's host build and nghttp2, against local
+    # HTTPS servers, HTTP/1.1 and HTTP/2 (tests/host/host-test.sh). The Amiga
+    # build is build.sh's.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # OpenTLS with TLS 1.3: openamigatls main after #14 (5e62884).
       - uses: actions/checkout@v4
         with:
           repository: DalsinAI/openamigatls
-          ref: e7c0e2d546f33c655c1e4512b4669428daf8a56f
+          ref: 5e62884b77f8eb1a5056a3eb4e00d45c11a27eaf
           path: openamigatls
-      - name: Fetch curl (SOURCES)
+      - name: Fetch curl and nghttp2 (SOURCES)
         run: |
           mkdir -p tarballs
           curl -fsSL -o tarballs/curl-8.22.0.tar.xz https://curl.se/download/curl-8.22.0.tar.xz
+          curl -fsSL -o tarballs/nghttp2-1.70.0.tar.xz https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.xz
+          echo "e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2  tarballs/nghttp2-1.70.0.tar.xz" | sha256sum -c -
       - name: Host test
         run: OPENTLS_SRC=openamigatls JOBS=4 tests/host/host-test.sh
       - name: Host test with AddressSanitizer and UBSan
         run: OPENTLS_SRC=openamigatls JOBS=4 SANITIZE=1 tests/host/host-test.sh
 
   amiga:
-    # libcurl and curltest for the 68040 with the OpenAmigaGCC release and
-    # OpenNDK's network headers (tests/amiga/ci-build.sh)
+    # libcurl, nghttp2 and curltest for the 68040 with the OpenAmigaGCC
+    # release and OpenNDK's network headers (tests/amiga/ci-build.sh)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # the TLS 1.3 headers: openamigatls main after #14 (5e62884), as in the host job
       - uses: actions/checkout@v4
         with:
           repository: DalsinAI/openamigatls
-          ref: e7c0e2d546f33c655c1e4512b4669428daf8a56f
+          ref: 5e62884b77f8eb1a5056a3eb4e00d45c11a27eaf
           path: openamigatls
       - uses: actions/checkout@v4
         with:
           repository: DalsinAI/openamigasdk
           ref: 5bfeaea0d004e86afb990fddb591bf0039f09233
           path: openamigasdk
-      - name: Fetch the toolchain, curl and zlib (SOURCES)
+      - name: Fetch the toolchain, curl, nghttp2 and zlib (SOURCES)
         run: |
           mkdir -p tarballs tc
           U=https://github.com/DalsinAI/openamigagcc/releases/download/v16.2.0-open3
@@ -50,5 +55,7 @@ jobs:
           tar xf tc/tc.tar.xz -C tc
           curl -fsSL -o tarballs/curl-8.22.0.tar.xz https://curl.se/download/curl-8.22.0.tar.xz
           curl -fsSL -o tarballs/zlib-1.3.1.tar.xz https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.xz
+          curl -fsSL -o tarballs/nghttp2-1.70.0.tar.xz https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.xz
+          echo "e05cb1388eaca3830aded4ccf20044b6e1ac1a61411dcca11b0437c4285c8bc2  tarballs/nghttp2-1.70.0.tar.xz" | sha256sum -c -
       - name: 68040 build
         run: TOOLCHAIN_DIR=tc/openamigagcc-16.2.0-open3-x86_64-linux OPENNDK=openamigasdk/OpenNDK OPENTLS_SRC=openamigatls tests/amiga/ci-build.sh
