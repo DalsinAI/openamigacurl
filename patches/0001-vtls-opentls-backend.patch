@@ -153,7 +153,7 @@ diff -ruN a/lib/curl_setup.h b/lib/curl_setup.h
 diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 --- a/lib/vtls/opentls.c
 +++ b/lib/vtls/opentls.c
-@@ -0,0 +1,753 @@
+@@ -0,0 +1,820 @@
 +/***************************************************************************
 + *                                  _   _ ____  _
 + *  Project                     ___| | | |  _ \| |
@@ -187,6 +187,11 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 + * backend. On AmigaOS the library is opened here, the first time a
 + * connection needs it, under a base of its own (Curl_OpenTLSBase), so a
 + * program that also uses opentls.library keeps its own OpenTLSBase.
++ *
++ * Sessions are resumed through curl's session cache: one OTSession per
++ * peer key (host, port, verify settings, trust store, TLS versions and
++ * library version), kept as the peer's object. OT_SetSession() copies it,
++ * so every new connection to that peer offers the same one.
 + */
 +#include "curl_setup.h"
 +
@@ -207,6 +212,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +#include "easy_lock.h"
 +#include "vtls/vtls.h"
 +#include "vtls/vtls_int.h"
++#include "vtls/vtls_scache.h"
 +#include "vtls/opentls.h"
 +
 +#ifdef __amigaos__
@@ -247,6 +253,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  int io_blocked;              /* CURL_SSL_IO_NEED_* that would block */
 +  size_t send_buffered;        /* plain bytes taken, records not yet sent */
 +  BIT(sent_shutdown);
++  BIT(session_offered);        /* a cached session went to OT_SetSession */
 +};
 +
 +/* moves TLS records through the filter below this one */
@@ -532,6 +539,57 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  failf(data, "OpenTLS: %s: %s (%ld)", what, text, (long)err);
 +}
 +
++/* the session cache's destructor for a peer's OTSession */
++static void ot_session_free(void *sobj)
++{
++#ifdef __amigaos__
++  if(!Curl_OpenTLSBase)              /* after curl_global_cleanup() */
++    return;
++#endif
++  OT_FreeSession((struct OTSession *)sobj);
++}
++
++/* offers the session cached for this peer, if there is one. Only a peer
++   key with the same host, port, verify settings and trust store finds it:
++   a resumed handshake checks no certificate. */
++static void ot_session_offer(struct Curl_cfilter *cf, struct Curl_easy *data,
++                             struct opentls_ssl_backend_data *backend)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct OTSession *s;
++  LONG err = OTERR_ARGS;
++
++  if(!Curl_ssl_scache_use(cf, data))
++    return;
++  Curl_ssl_scache_lock(data);
++  s = Curl_ssl_scache_get_obj(cf, data, connssl->peer.scache_key);
++  if(s)
++    err = OT_SetSession(backend->conn, s);  /* copied: s stays cached */
++  Curl_ssl_scache_unlock(data);
++  backend->session_offered = (err == OTERR_OK);
++  if(s && err != OTERR_OK)
++    CURL_TRC_CF(data, cf, "cached session not offered: %ld", (long)err);
++}
++
++/* caches the session of a full handshake for the next connection */
++static void ot_session_keep(struct Curl_cfilter *cf, struct Curl_easy *data,
++                            struct opentls_ssl_backend_data *backend)
++{
++  struct ssl_connect_data *connssl = cf->ctx;
++  struct OTSession *s;
++
++  if(!Curl_ssl_scache_use(cf, data))
++    return;
++  s = OT_GetSession(backend->conn);
++  if(!s)
++    return;                          /* the server gave no session ID */
++  Curl_ssl_scache_lock(data);
++  /* replaces the peer's older session, and frees s if it cannot keep it */
++  (void)Curl_ssl_scache_add_obj(cf, data, connssl->peer.scache_key, s,
++                                ot_session_free);
++  Curl_ssl_scache_unlock(data);
++}
++
 +static CURLcode ot_init_conn(struct Curl_cfilter *cf, struct Curl_easy *data,
 +                             struct opentls_ssl_backend_data *backend)
 +{
@@ -612,6 +670,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +    ot_failf(data, backend, "verify mode", err);
 +    return CURLE_SSL_CONNECT_ERROR;
 +  }
++  ot_session_offer(cf, data, backend);
 +  return CURLE_OK;
 +}
 +
@@ -647,6 +706,9 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  }
 +  if(rc != OTERR_OK) {
 +    ot_failf(data, backend, "handshake", rc);
++    /* do not offer that session again */
++    if(backend->session_offered)
++      Curl_ssl_scache_remove_all(cf, data, connssl->peer.scache_key);
 +    return ot_map_error(rc);
 +  }
 +
@@ -654,12 +716,16 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +    const char *alpn = (const char *)OT_GetALPN(backend->conn);
 +    const char *cipher = (const char *)OT_GetCipher(backend->conn);
 +    LONG proto = OT_GetProtocol(backend->conn);
++    bool resumed = OT_SessionResumed(backend->conn) == 1;
 +    size_t alpn_len = alpn ? strlen(alpn) : 0;
 +
-+    infof(data, "OpenTLS: %s handshake done, cipher %s",
++    infof(data, "OpenTLS: %s handshake done, %s, cipher %s",
 +          proto == OT_TLS13 ? "TLSv1.3" : proto == OT_TLS12 ? "TLSv1.2" :
 +          proto == OT_TLS11 ? "TLSv1.1" : "TLSv1.0",
++          resumed ? "session resumed" : "full handshake",
 +          cipher ? cipher : "?");
++    if(!resumed)
++      ot_session_keep(cf, data, backend);
 +    if(connssl->alpn) {
 +      result = Curl_alpn_set_negotiated(cf, data, connssl,
 +                                        (const unsigned char *)alpn,
@@ -828,6 +894,7 @@ diff -ruN a/lib/vtls/opentls.c b/lib/vtls/opentls.c
 +  ot_entry_release(backend->entry);
 +  backend->entry = NULL;
 +  backend->send_buffered = 0;
++  backend->session_offered = FALSE;
 +}
 +
 +static void *ot_get_internals(struct ssl_connect_data *connssl,
