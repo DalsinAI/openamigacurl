@@ -5,7 +5,7 @@ link libraries for GCC programs. HTTP and HTTPS only. Part of the [OpenAmiga](ht
 ports, made for [OpenBrowser](https://github.com/DalsinAI/openamigabrowser),
 the WebKit browser for AmigaOS 3.2.
 
-**Status, 20 October 2026:** HTTP/2 through nghttp2, and a slimmer curl: only HTTP, HTTPS and what OpenBrowser uses (below). Since 19 October, HTTPS goes through
+**Status, 20 October 2026:** TLS 1.3, with its sessions resumed, through OpenTLS 1.3 (openamigatls #14, not merged yet). HTTP/2 through nghttp2, and a slimmer curl: only HTTP, HTTPS and what OpenBrowser uses (below). Since 19 October, HTTPS goes through
 [OpenTLS](https://github.com/DalsinAI/openamigatls) (`opentls.library`), the
 Team's own TLS, in place of AmiSSL. The OpenTLS backend passes its host tests
 (below), and the 68040 build runs in CI; a run of `curltest` on an
@@ -38,7 +38,8 @@ notices.
   - `CURLOPT_CONNECT_ONLY` with `curl_easy_send`/`curl_easy_recv`, which WebKit's own WebSocket code runs on (it does not use curl's WebSocket API);
   - `CURLOPT_RESOLVE`, `CURLOPT_DNS_CACHE_TIMEOUT`, the timeouts, the debug callback and verbose messages (the engine's network log), `curl_easy_pause`, and every `CURLINFO` the engine reads.
   - Not needed from curl: `file:` and `data:` addresses (the engine opens files and decodes `data:` itself; its `CURLOPT_PROTOCOLS_STR` "file,http,https" is refused because `file` is not built, as it already was, which leaves curl with what it has: HTTP and HTTPS), cookies (OpenBrowser's own cookie jar; the engine turns curl's off with `CURLOPT_COOKIEFILE` NULL, and sharing `CURL_LOCK_DATA_COOKIE` just answers "not built in"), and Alt-Svc (only of use with HTTP/3). OpenBrowser Lite does not use curl.
-- **What the backend does:** TLS 1.0 to 1.2 (OpenTLS has no 1.3 yet; a server that wants only 1.3 is refused with a clear error), ALPN, SNI, certificate chains checked against `S:OpenTLS/ca-bundle.pem` and `ENVARC:OpenTLS/certs/`, host names and IP addresses. `CURLOPT_CAINFO` and `CURLOPT_CAINFO_BLOB` replace that store, as with other backends; `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST` turn checks off (the host name only together with the chain: VERIFYHOST on with VERIFYPEER off is refused), and with VERIFYPEER off no trust store is needed. The trust store is read once and shared by connections with the same settings (reading it costs seconds on a 68040). TLS sessions are resumed: the first full handshake with a server leaves its session in curl's session cache, and later connections to that server resume it, skipping the key exchange and the certificate check, which are most of a handshake's time on a 68040. A session is only offered to a connection with the same host, port, verify settings, trust store and TLS versions, so a session made with `-k` never lets a checked connection through unchecked; `CURLOPT_SSL_SESSIONID_CACHE` 0 turns it off.
+- **What the backend does:** TLS 1.0 to 1.3 (TLS 1.3 with `opentls.library` 1.3; 1.2 and older libraries stop at TLS 1.2), ALPN, SNI, certificate chains checked against `S:OpenTLS/ca-bundle.pem` and `ENVARC:OpenTLS/certs/`, host names and IP addresses. `CURLOPT_CAINFO` and `CURLOPT_CAINFO_BLOB` replace that store, as with other backends; `CURLOPT_SSL_VERIFYPEER` and `CURLOPT_SSL_VERIFYHOST` turn checks off (the host name only together with the chain: VERIFYHOST on with VERIFYPEER off is refused), and with VERIFYPEER off no trust store is needed. The trust store is read once and shared by connections with the same settings (reading it costs seconds on a 68040). TLS sessions are resumed: the first full handshake with a server leaves its session in curl's session cache, and later connections to that server resume it, skipping the key exchange and the certificate check, which are most of a handshake's time on a 68040. A session is only offered to a connection with the same host, port, verify settings, trust store and TLS versions, so a session made with `-k` never lets a checked connection through unchecked; `CURLOPT_SSL_SESSIONID_CACHE` 0 turns it off, and a resumption that fails takes the session out of the cache.
+- **TLS 1.3 sessions.** A TLS 1.3 session is the server's ticket, which the server sends after the handshake and OpenTLS reads with the first data; a session taken before it comes resumes nothing. So the backend caches a TLS 1.2 session when the handshake ends, as before, and a TLS 1.3 session only once the connection has read data, by when servers have sent their tickets (OpenSSL, and with it nginx and Apache, and Go's server send them right after the handshake, before any answer; and a session cached a little early is still filled in by its ticket while the connection lives). A connection that reads nothing caches nothing, so it never pushes a server's good session out of the cache. When a TLS 1.3 connection ends with close_notify, the backend checks once more: a session that has its ticket is cached, and one cached on the first read that never got a ticket is taken out again. A resumed TLS 1.3 connection caches the new ticket it gets. It costs one session copy per connection, on its first read, and a test of one flag on every read after it. `opentls.library` has no call that says whether a session holds a ticket yet; only a closed connection tells (`OT_GetSession()` answers NULL then), so a connection that ends without close_notify keeps what it cached on the first read.
 - **Not yet:** client certificates, `CURLOPT_PINNEDPUBLICKEY` (OpenTLS pins whole certificates, curl pins keys), cipher lists, OCSP stapling and certificate details (`CURLOPT_CERTINFO`). Asking for one gives an error, never a silent downgrade.
 - **Sockets are not file descriptors.** curl's configure finds libnix's `fcntl()`, `ioctl()` and `pipe()` and would use them on bsdsocket sockets, which fails (every transfer then stops with "Out of memory" while curl makes its wake-up socket pair). The script tells curl to use `IoctlSocket(FIONBIO)` and no `pipe()`, so the wake-up pair is a loopback TCP pair through bsdsocket.library.
 - **Your program opens the network.** Each task that calls curl opens `bsdsocket.library` itself, sets the global `SocketBase` and points bsdsocket's errno at the C library's (`SocketBaseTags(SBTM_SETVAL(SBTC_ERRNOPTR(sizeof(errno))), &errno, ...)`); AmiSSL used to do that last part through `AmiSSL_ErrNoPtr`. curl opens `opentls.library` itself, under a base of its own, so a program that uses OpenTLS directly keeps its own `OpenTLSBase`. `tests/curltest.c` shows how.
@@ -93,6 +94,31 @@ change to the engine; the engine could say `CURL_HTTP_VERSION_2TLS` and
 it.
 
 ## Tested
+
+### TLS 1.3 and its sessions, on Linux (20 October 2026)
+
+`tests/host/host-test.sh` builds OpenTLS from openamigatls #14 (branch
+`team2/tls13-20261020`; CI checks out that branch until #14 merges, then
+openamigatls main again) and adds TLS 1.3-only servers: `tls_server.py` with
+OpenSSL's two tickets per handshake, the same with no tickets, and
+`h2_server.c` over TLS 1.3, with and without tickets. It checks that a TLS 1.3
+server gets TLS 1.3 and a server with both does too, an 8 MB upload and a 20 MB
+download over TLS 1.3, and that `--tls-max 1.2` against a TLS 1.3-only server
+and `--tlsv1.3` against a TLS 1.2-only one are refused. Sessions over TLS 1.3:
+the second and third connections resume (all TLS 1.3), also in parallel after
+the first; a connection still open has cached its session after its first
+read; verification turned on or off, another CA file, `--no-sessionid`, another
+host name or a TLS 1.2 limit gets a full handshake, and a `-k` session does
+not skip the host name check; a server that sends no ticket gets full
+handshakes, and at close_notify the session cached without a ticket is taken
+out of the cache, while one with its ticket is confirmed and resumed. HTTP/2
+over TLS 1.3: a 20 MB download, an 8 MB upload, four transfers multiplexed on
+one connection, and the second and third connections resume and are HTTP/2
+over TLS 1.3 again (not after verify off; no resumption with no tickets). TLS
+1.3 resumption, over HTTP/1.1 and HTTP/2, is also checked with one socket call
+in 2, 3 or 7 answering "would block". The TLS 1.2 tests run as before against
+servers held to TLS 1.2. CI runs all of it plainly and with AddressSanitizer
+and UBSan.
 
 ### HTTP/2, on Linux (20 October 2026)
 
@@ -159,7 +185,10 @@ It has not yet been run on real Amiga hardware.
 ## Known issues
 
 - Only HTTP and HTTPS are built. HTTP/2 is HTTPS only (by ALPN); no HTTP/3.
-- No TLS 1.3 until OpenTLS has it.
+- TLS 1.3 needs `opentls.library` 1.3 (openamigatls #14). No 0-RTT data.
+- A TLS 1.3 connection that ends without close_notify cannot tell whether
+  the session it cached on its first read got a ticket (OpenTLS has no call
+  for that yet); with every common server it has.
 
 ## Licence
 
