@@ -1,12 +1,14 @@
 #!/bin/sh
-# openamigacurl in the cloud: libcurl and curltest for the 68040 with the
+# openamigacurl in the cloud: libcurl (with nghttp2) and curltest for the 68040 with the
 # OpenAmigaGCC release toolchain and OpenNDK, no vendor headers anywhere.
 # MIT, Copyright (c) 2026 AmigaChrome Team.
 #
 #   TOOLCHAIN_DIR  an unpacked openamigagcc-*-x86_64-linux folder
 #   OPENNDK        an OpenNDK folder holding the bsdsocket headers
 #   OPENTLS_SRC    an openamigatls checkout (default ../openamigatls)
-#   TARBALLS       holds curl-8.22.0.tar.xz and zlib-1.3.1.tar.xz (default ./tarballs)
+#   TARBALLS       holds curl-8.22.0.tar.xz, nghttp2-1.70.0.tar.xz and
+#                  zlib-1.3.1.tar.xz (default ./tarballs); build.sh checks
+#                  each one's SHA-256 against SOURCES' sums
 #
 # usage: tests/amiga/ci-build.sh
 set -eu
@@ -39,5 +41,9 @@ OS32_GCC16="$W/stove" NDK_INCLUDE="$NDK/Include_H" OPENTLS_INCLUDE="$OT/include"
 # the OpenTLS backend and the network headers build with no warning
 if grep -E '(opentls\.c|Include_H/).*(warning|error)' "$W/build.log"; then exit 1; fi
 tail -1 "$W/build.log"
+# HTTP/2 is in: curl's configure found nghttp2, and curltest links it
+grep -q 'Features:.*HTTP2' "$W/build.log" || { echo "curl was configured without HTTP/2"; exit 1; }
+grep -q 'Protocols: http https$' "$W/build.log" || { echo "curl has protocols besides HTTP and HTTPS"; exit 1; }
+"$TC/bin/m68k-amigaos-nm" "$W/out/curltest" | grep -q 'nghttp2_session_client_new' || { echo "curltest has no nghttp2"; exit 1; }
 "$TC/bin/m68k-amigaos-objdump" -f "$W/out/curltest" | grep -q 'amiga' || { echo "curltest is not an Amiga executable"; exit 1; }
-echo "68040 build ok: $W/out/lib/libcurl.a, $W/out/curltest"
+echo "68040 build ok: $W/out/lib/libcurl.a, $W/out/lib/libnghttp2.a, $W/out/curltest"

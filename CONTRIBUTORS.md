@@ -21,17 +21,19 @@ patch changes its source, the changed file stays under that licence too.
 
 ## Third-party work in this repository
 
-Only curl's licence notice is committed here; its source is not.
+Only curl's and nghttp2's licence notices are committed here; their source is not.
 
 | Component | Where | Authors | Licence |
 | --- | --- | --- | --- |
 | curl licence notice | `upstream/COPYING` | Daniel Stenberg and many contributors (curl's THANKS file) | curl licence (MIT-style) |
+| nghttp2 licence notice | `upstream/COPYING.nghttp2` | Tatsuhiro Tsujikawa and the nghttp2 contributors | MIT |
 
 ## Fetched at build time, not committed
 
-`build.sh` unpacks this tarball, listed with its SHA-256 sum in `SOURCES`:
+`build.sh` unpacks these tarballs, listed with their SHA-256 sums in `SOURCES` (see also `THIRD_PARTY_NOTICES.md`):
 
 - **curl 8.22.0** (`curl-8.22.0.tar.xz`): Daniel Stenberg and the curl contributors, curl licence. The build uses curl's own AmigaOS support.
+- **nghttp2 1.70.0** (`nghttp2-1.70.0.tar.xz`): Tatsuhiro Tsujikawa and the nghttp2 contributors, MIT. curl's HTTP/2; only its library is built.
 
 ## Used at build time, not included
 

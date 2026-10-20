@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """openamigacurl host test: a local HTTPS server for the OpenTLS backend.
 
-    tls_server.py PORT CERT KEY [tls13]
+    tls_server.py PORT CERT KEY [tls13|http11]
 
 POST answers the body's SHA-256 and length; GET /N answers N bytes; GET with
 an X-Close header answers over HTTP/1.0 and closes TCP with no close_notify.
-"tls13" makes it refuse anything older than TLS 1.3.
+"tls13" makes it refuse anything older than TLS 1.3; "http11" makes it
+answer ALPN with http/1.1 only (without it, the server ignores ALPN).
 MIT, Copyright (c) 2026 AmigaChrome Team."""
 import hashlib
 import http.server
@@ -61,8 +62,11 @@ def main():
     port, cert, key = int(sys.argv[1]), sys.argv[2], sys.argv[3]
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cert, key)
-    if len(sys.argv) > 4 and sys.argv[4] == "tls13":
+    mode = sys.argv[4] if len(sys.argv) > 4 else ""
+    if mode == "tls13":
         ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    elif mode == "http11":
+        ctx.set_alpn_protocols(["http/1.1"])
     srv = Server(("127.0.0.1", port), Handler)
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     srv.serve_forever()
