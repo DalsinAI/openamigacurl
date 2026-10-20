@@ -1,10 +1,12 @@
-/* openamigacurl host test: a local HTTP/2 server over TLS 1.2 for the
+/* openamigacurl host test: a local HTTP/2 server over TLS for the
  * OpenTLS backend, on nghttp2's library (built from the same tarball as the
  * Amiga build's) and the host's OpenSSL.
  *
- *     h2_server PORT CERT KEY
+ *     h2_server PORT CERT KEY [tls13|tls13-notickets]
  *
- * It speaks only h2, chosen by ALPN, and only TLS 1.2 (OpenTLS has no 1.3).
+ * It speaks only h2, chosen by ALPN, and only TLS 1.2, or with "tls13" only
+ * TLS 1.3 (OpenSSL then sends two session tickets after each handshake);
+ * "tls13-notickets" is "tls13" that sends no tickets.
  * GET /N answers N bytes; POST answers the body's SHA-256 and length, as
  * tls_server.py does. Every answer carries "x-conn: C", C counting the TLS
  * connections the server has accepted, so a test can see which transfers
@@ -257,13 +259,20 @@ int main(int argc, char **argv)
     int one = 1, ls;
 
     if (argc < 4) {
-        fprintf(stderr, "usage: h2_server PORT CERT KEY\n");
+        fprintf(stderr, "usage: h2_server PORT CERT KEY [tls13|tls13-notickets]\n");
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
     ctx = SSL_CTX_new(TLS_server_method());
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-    SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+    if (argc > 4 && !strncmp(argv[4], "tls13", 5)) {
+        SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+        SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+        if (!strcmp(argv[4], "tls13-notickets"))
+            SSL_CTX_set_num_tickets(ctx, 0);
+    } else {
+        SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+        SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+    }
     SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION | SSL_OP_NO_RENEGOTIATION);
     if (SSL_CTX_use_certificate_chain_file(ctx, argv[2]) != 1 ||
         SSL_CTX_use_PrivateKey_file(ctx, argv[3], SSL_FILETYPE_PEM) != 1) {
